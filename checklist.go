@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ type nativeRequest struct {
 }
 
 type nativeResponse struct {
+	Link         string          `json:"link"`
 	ID           string          `json:"id"`
 	Items        []ChecklistItem `json:"items"`
 	Error        string          `json:"error"`
@@ -69,6 +71,13 @@ func (c Client) VerifyParticipants(ctx context.Context, id string, participants 
 	return err
 }
 
+// SharedLink verifies the exact participants and returns a freshly copied iCloud link.
+// It never adds invitations, making it safe for recovery after uncertain sharing.
+func (c Client) SharedLink(ctx context.Context, id string, participants []string) (string, error) {
+	result, err := c.nativeCall(ctx, nativeRequest{Operation: "shared_link", ID: id, Participants: participants})
+	return result.Link, err
+}
+
 func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeResponse, error) {
 	fail := func(err error, uncertain bool) (nativeResponse, error) {
 		return nativeResponse{}, &OperationError{Operation: req.Operation, Uncertain: uncertain, Err: err}
@@ -76,7 +85,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 	if ctx == nil || c.Timeout < 0 || !validID(req.ID) {
 		return fail(ErrInvalidInput, false)
 	}
-	sharing := req.Operation == "share" || req.Operation == "participants"
+	sharing := req.Operation == "share" || req.Operation == "participants" || req.Operation == "shared_link"
 	if sharing {
 		if len(req.Participants) != 2 || req.Participants[0] == req.Participants[1] {
 			return fail(ErrInvalidInput, false)
@@ -152,6 +161,12 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 	for _, item := range result.Items {
 		if !validText(item.Text) {
 			return fail(errors.New("native helper returned invalid item"), uncertain)
+		}
+	}
+	if req.Operation == "shared_link" {
+		u, err := url.Parse(result.Link)
+		if err != nil || u.Scheme != "https" || u.Host != "www.icloud.com" || u.User != nil || !strings.HasPrefix(u.Path, "/notes/") || len(strings.TrimPrefix(u.Path, "/notes/")) == 0 {
+			return fail(errors.New("verified iCloud Notes link missing"), false)
 		}
 	}
 	return result, nil

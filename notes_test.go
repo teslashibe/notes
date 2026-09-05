@@ -228,10 +228,10 @@ func TestJXAContract(t *testing.T) {
 				if got.Error != nil || got.Note == nil || got.Note.ID != "new" {
 					t.Fatalf("%s", output)
 				}
-				if strings.Contains(got.Note.Body, "<script>") || !strings.HasPrefix(got.Note.Body, "<div>") {
+				if strings.Contains(got.Note.Body, "<script>") || !strings.HasPrefix(got.Note.Body, "<h1>") {
 					t.Fatalf("unsafe HTML: %s", output)
 				}
-				if req.Title == "<title> '&" && got.Note.Body != "<div>&lt;title&gt; &#39;&amp;</div><div>line 1<br>&lt;script&gt;bad() &amp; &quot; &#39; \\🙂</div>" {
+				if req.Title == "<title> '&" && got.Note.Body != "<h1>&lt;title&gt; &#39;&amp;</h1><div>line 1<br>&lt;script&gt;bad() &amp; &quot; &#39; \\🙂</div>" {
 					t.Fatalf("unexpected HTML: %s", got.Note.Body)
 				}
 			}

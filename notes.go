@@ -311,7 +311,8 @@ const script = `function run(argv) {
                 container = container.container();
             }
         }
-        var body = "<div>" + html(input.title) + "</div><div>" + html(input.text || "") + "</div>";
+        var body = "<h1>" + html(input.title) + "</h1>";
+        if (input.text) body += "<div>" + html(input.text) + "</div>";
         var note = app.Note({name: input.title, body: body});
         writing = true;
         folder.notes.push(note);

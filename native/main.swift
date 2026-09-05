@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import Darwin
 
-struct Request: Decodable { let operation: String; let id: String; let text: String?; let checked: Bool?; let participants: [String]? }
+struct Request: Decodable { let operation: String; let id: String; let text: String?; let checked: Bool?; let participants: [String]?; let replacement: String? }
 struct Item: Codable, Equatable { let text: String; let checked: Bool; let location: Int; let length: Int }
 struct Failure: Error { let message: String }
 var wrote = false
@@ -24,7 +24,8 @@ func select(_ e: AXUIElement, _ location: Int, _ length: Int = 0) throws {
     try set(e, kAXFocusedAttribute, kCFBooleanTrue)
     try set(e, kAXSelectedTextRangeAttribute, AXValueCreate(.cfRange, &range)!)
 }
-func key(_ app: NSRunningApplication, _ code: CGKeyCode, _ flags: CGEventFlags) {
+func key(_ app: NSRunningApplication, _ code: CGKeyCode, _ flags: CGEventFlags) throws {
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { try fail("Notes lost foreground; keyboard automation stopped") }
     for down in [true, false] {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
         event.flags = flags
@@ -74,19 +75,33 @@ func unique(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> A
     return matches[0]
 }
 func click(_ e: AXUIElement) throws {
-    guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
-    guard (attr(e, kAXEnabledAttribute) as? NSNumber)?.boolValue != false,
-          let position = attr(e, kAXPositionAttribute), let dimensions = attr(e, kAXSizeAttribute) else { try fail("native control unavailable") }
-    var point = CGPoint.zero; var size = CGSize.zero
-    AXValueGetValue(position as! AXValue, .cgPoint, &point)
-    AXValueGetValue(dimensions as! AXValue, .cgSize, &size)
-    guard size.width > 0, size.height > 0 else { try fail("native control not visible") }
-    point.x += size.width / 2; point.y += size.height / 2
-    if let activation = attr(e, "AXActivationPoint"), CFGetTypeID(activation) == AXValueGetTypeID() { AXValueGetValue(activation as! AXValue, .cgPoint, &point) }
-    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
+    // Never use global coordinate clicks: a share picker or focus change can
+    // redirect them to an unrelated target. Labels in SwiftUI often resolve to
+    // a static-text child, so walk only its Notes-owned ancestor chain.
+    var current: AXUIElement? = e
+    var sawEnabledAction = false
+    for _ in 0..<5 {
+        guard let candidate = current else { break }
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(candidate, &owner) == .success, owner == app.processIdentifier else { try fail("native control does not belong to foreground Notes") }
+        var actionValues: CFArray?
+        if AXUIElementCopyActionNames(candidate, &actionValues) == .success {
+            let actions = (actionValues as? [String]) ?? []
+            let action = actions.contains(kAXPressAction as String) ? kAXPressAction as String :
+                (actions.contains(kAXShowMenuAction as String) ? kAXShowMenuAction as String : "")
+            if !action.isEmpty && (attr(candidate, kAXEnabledAttribute) as? NSNumber)?.boolValue != false {
+                sawEnabledAction = true
+                if AXUIElementPerformAction(candidate, action as CFString) == .success {
+                    Thread.sleep(forTimeInterval: 0.35)
+                    return
+                }
+            }
+        }
+        guard let parent = attr(candidate, kAXParentAttribute) else { current = nil; continue }
+        current = unsafeBitCast(parent, to: AXUIElement.self)
     }
-    Thread.sleep(forTimeInterval: 0.35)
+    try fail(sawEnabledAction ? "safe accessibility action failed" : "native control and ancestors support neither safe press nor menu")
 }
 func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> AXUIElement {
     for _ in 0..<20 {
@@ -100,10 +115,21 @@ func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> 
 func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplication) throws -> [String: Any] {
     guard let participants = request.participants, participants.count == 2,
           Set(participants).count == 2, participants.allSatisfy({ $0.first == "+" && $0.dropFirst().allSatisfy(\.isNumber) }) else { try fail("two exact authorized participants required") }
+    guard !elements(root).contains(where: { ["AXSheet", "AXPopover"].contains(attr($0, kAXRoleAttribute) as? String ?? "") }) else { try fail("existing Notes modal; refusing to take ownership") }
+    defer {
+        let sheets = elements(root).filter { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
+        if sheets.count == 1 {
+            let cancel = elements(sheets[0]).filter { attr($0, kAXRoleAttribute) as? String == "AXButton" && label($0) == "Cancel" }
+            if cancel.count == 1 { _ = AXUIElementPerformAction(cancel[0], kAXPressAction as CFString) }
+        } else if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+              elements(root).contains(where: { attr($0, kAXRoleAttribute) as? String == "AXPopover" }) {
+            try? key(app, 53, [])
+        }
+    }
     if request.operation == "share" {
         // This creates invitations only. Never re-invite or modify existing collaborations.
         guard !elements(root).contains(where: { label($0) == "Collaborate" }) else { try fail("note already shared; verify participants instead") }
-        try click(unique(root) { label($0) == "Share" })
+        try click(unique(root) { (attr($0, kAXRoleAttribute) as? String) == (kAXButtonRole as String) && label($0) == "Share" })
         let popup = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXPopUpButton" && attr($0, kAXValueAttribute) as? String == "Collaborate" }
         _ = popup
         try click(unique(root) { label($0) == "Invite with Link" })
@@ -113,7 +139,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
         for (index, phone) in participants.enumerated() {
             try select(field, index)
             try set(field, kAXSelectedTextAttribute, phone as CFString)
-            key(app, 36, [])
+            try key(app, 36, [])
             let suggestion = try waitFor(root) {
                 attr($0, kAXRoleAttribute) as? String == "AXStaticText" && (attr($0, kAXValueAttribute) as? String ?? "").hasPrefix(phone + " (")
             }
@@ -141,10 +167,25 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
         guard (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == false else { try fail("participant expansion setting not verified") }
     }
     try click(unique(panel) { label($0) == "Done" })
-    return ["id": request.id, "participants": participants, "verified": true]
+    var result: [String: Any] = ["id": request.id, "participants": participants, "verified": true]
+    if request.operation == "shared_link" {
+        try click(unique(root) { label($0) == "Collaborate" })
+        let copy = try waitFor(root) { label($0) == "Copy Link" }
+        let previous = NSPasteboard.general.changeCount
+        try click(copy)
+        for _ in 0..<40 {
+            if NSPasteboard.general.changeCount != previous { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        guard NSPasteboard.general.changeCount != previous,
+              let link = NSPasteboard.general.string(forType: .string),
+              let url = URL(string: link), url.scheme == "https", url.host == "www.icloud.com", url.path.hasPrefix("/notes/") else { try fail("fresh iCloud Notes link not available") }
+        result["link"] = link
+    }
+    return result
 }
 func run(_ request: Request) throws -> [String: Any] {
-    guard ["checklist", "add_checklist_item", "set_checked", "share", "participants"].contains(request.operation) else { try fail("unsupported operation") }
+    guard ["checklist", "replace_text", "add_checklist_item", "set_checked", "share", "participants", "shared_link"].contains(request.operation) else { try fail("unsupported operation") }
     let lock = open((NSHomeDirectory() + "/Library/Caches/teslashibe-notes.lock"), O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { try fail("Notes automation busy") }
     defer { close(lock) }
@@ -153,6 +194,7 @@ func run(_ request: Request) throws -> [String: Any] {
     Thread.sleep(forTimeInterval: 0.25)
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
     let root = AXUIElementCreateApplication(app.processIdentifier)
+    guard AXUIElementSetMessagingTimeout(root, 2) == .success else { try fail("cannot bound Notes accessibility calls") }
     let all = elements(root)
     guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
     let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
@@ -160,8 +202,20 @@ func run(_ request: Request) throws -> [String: Any] {
     let editor = editors[0]
     let before = try content(editor)
     guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
-    if request.operation == "share" || request.operation == "participants" { return try sharing(request, root, app) }
-    if request.operation == "set_checked" {
+    if request.operation == "share" || request.operation == "participants" || request.operation == "shared_link" { return try sharing(request, root, app) }
+    if request.operation == "replace_text" {
+        guard let old = request.text, !old.isEmpty, let replacement = request.replacement else { try fail("exact replacement required") }
+        let source = before.0 as NSString
+        let range = source.range(of: old)
+        guard range.location != NSNotFound, source.range(of: old, options: [], range: NSRange(location: range.location + range.length, length: source.length - range.location - range.length)).location == NSNotFound else { try fail("replacement target missing or ambiguous") }
+        try select(editor, range.location, range.length)
+        guard try content(editor).0 == before.0 else { try fail("note changed before edit") }
+        wrote = true
+        try set(editor, kAXSelectedTextAttribute, replacement as CFString)
+        let after = try content(editor)
+        guard after.0 == source.replacingCharacters(in: range, with: replacement), after.1.count == before.1.count,
+              zip(after.1, before.1).allSatisfy({ $0.checked == $1.checked }) else { try fail("replacement or checklist state not verified") }
+    } else if request.operation == "set_checked" {
         let matches = before.1.filter { $0.text == request.text }
         guard matches.count == 1, let checked = request.checked else { try fail("item missing or ambiguous") }
         if matches[0].checked != checked {
@@ -169,7 +223,7 @@ func run(_ request: Request) throws -> [String: Any] {
             let current = try content(editor)
             guard current.0 == before.0 && current.1 == before.1 else { try fail("note changed before mutation") }
             wrote = true
-            key(app, 32, [.maskCommand, .maskShift])
+            try key(app, 32, [.maskCommand, .maskShift])
             let after = try content(editor)
             let updated = after.1.filter { $0.text == request.text }
             guard updated.count == 1, updated[0].checked == checked else { try fail("checkbox mutation not verified") }
@@ -187,7 +241,7 @@ func run(_ request: Request) throws -> [String: Any] {
         try set(editor, kAXSelectedTextAttribute, (prefix + text + "\n") as CFString)
         try select(editor, location)
         if !(try content(editor).1.contains(where: { $0.location == location })) {
-            key(app, 37, [.maskCommand, .maskShift])
+            try key(app, 37, [.maskCommand, .maskShift])
         }
         let after = try content(editor)
         guard after.0 == before.0 + prefix + text + "\n", after.1.filter({ $0.text == text && !$0.checked }).count == 1 else { try fail("native checklist append not verified") }
