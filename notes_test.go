@@ -15,6 +15,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("NOTES_NATIVE_TEST") == "1" {
+		nativeTestProcess()
+	}
 	if os.Getenv("NOTES_HELPER") == "1" {
 		source, err := io.ReadAll(os.Stdin)
 		if err != nil || string(source) != script || len(os.Args) != 5 || os.Args[1] != "-l" || os.Args[2] != "JavaScript" || os.Args[3] != "-" {

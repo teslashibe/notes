@@ -39,8 +39,11 @@ type Capabilities struct {
 // AccountID and FolderID affect Create only; List and Get cover all accounts.
 // Requires macOS, Apple Notes, and user-granted Automation permission.
 type Client struct {
-	AccountID string
-	FolderID  string
+	// NativeExecutable is the absolute path to the compiled native/main.swift helper.
+	// An empty path disables native checklist operations.
+	NativeExecutable string
+	AccountID        string
+	FolderID         string
 	// Timeout defaults to 20 seconds and cannot exceed one minute.
 	Timeout time.Duration
 
@@ -81,8 +84,8 @@ func (e *OperationError) Error() string {
 
 func (e *OperationError) Unwrap() error { return e.Err }
 
-func (Client) Capabilities() Capabilities {
-	return Capabilities{Read: true, Create: true}
+func (c Client) Capabilities() Capabilities {
+	return Capabilities{Read: true, Create: true, NativeChecklist: c.NativeExecutable != "", Sharing: c.NativeExecutable != ""}
 }
 
 // List returns metadata for all accessible notes, without fetching their bodies.

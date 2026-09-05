@@ -1,0 +1,207 @@
+import AppKit
+import ApplicationServices
+import Darwin
+
+struct Request: Decodable { let operation: String; let id: String; let text: String?; let checked: Bool?; let participants: [String]? }
+struct Item: Codable, Equatable { let text: String; let checked: Bool; let location: Int; let length: Int }
+struct Failure: Error { let message: String }
+var wrote = false
+func fail(_ message: String) throws -> Never { throw Failure(message: message) }
+func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
+    var value: CFTypeRef?
+    AXUIElementCopyAttributeValue(e, key as CFString, &value)
+    return value
+}
+func elements(_ e: AXUIElement, _ depth: Int = 0) -> [AXUIElement] {
+    if depth > 14 { return [] }
+    return [e] + (attr(e, "AXChildren") as? [AXUIElement] ?? []).prefix(200).flatMap { elements($0, depth + 1) }
+}
+func set(_ e: AXUIElement, _ key: String, _ value: CFTypeRef) throws {
+    guard AXUIElementSetAttributeValue(e, key as CFString, value) == .success else { try fail("accessibility selection failed") }
+}
+func select(_ e: AXUIElement, _ location: Int, _ length: Int = 0) throws {
+    var range = CFRange(location: location, length: length)
+    try set(e, kAXFocusedAttribute, kCFBooleanTrue)
+    try set(e, kAXSelectedTextRangeAttribute, AXValueCreate(.cfRange, &range)!)
+}
+func key(_ app: NSRunningApplication, _ code: CGKeyCode, _ flags: CGEventFlags) {
+    for down in [true, false] {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
+        event.flags = flags
+        event.postToPid(app.processIdentifier)
+    }
+    Thread.sleep(forTimeInterval: 0.25)
+}
+func content(_ editor: AXUIElement) throws -> (String, [Item]) {
+    guard let text = attr(editor, kAXValueAttribute) as? String else { try fail("missing editor text") }
+    let ns = text as NSString
+    if ns.length == 0 { return (text, []) }
+    var range = CFRange(location: 0, length: ns.length)
+    var value: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(editor, "AXAttributedStringForRange" as CFString, AXValueCreate(.cfRange, &range)!, &value) == .success,
+          let attributed = value as? NSAttributedString else { try fail("native checklist state unavailable") }
+    var items: [Item] = []
+    var offset = 0
+    while offset < ns.length {
+        let line = ns.lineRange(for: NSRange(location: offset, length: 0))
+        let prefix = attributed.attribute(NSAttributedString.Key("AXListItemPrefix"), at: offset, effectiveRange: nil)
+        let state = (prefix as? NSAttributedString)?.string ?? (prefix as? String ?? "")
+        if state.hasPrefix("checklist item, ") {
+            guard state == "checklist item, incomplete" || state == "checklist item, completed" else { try fail("unknown native checkbox state") }
+            items.append(Item(text: ns.substring(with: line).trimmingCharacters(in: .newlines), checked: state == "checklist item, completed", location: line.location, length: line.length))
+        }
+        offset = NSMaxRange(line)
+    }
+    return (text, items)
+}
+func show(_ id: String) throws -> String {
+    // The ID is data, never executable script source. No title lookup or personal-note enumeration.
+    let source = "function run(a){const n=Application('Notes').notes.byId(a[0]);if(!n.exists()||n.id()!==a[0])throw Error('note not found');if(n.passwordProtected())throw Error('protected note');Application('Notes').show(n);Application('Notes').activate();return n.plaintext();}"
+    let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = ["-l", "JavaScript", "-e", source, id]
+    let output = Pipe(); process.standardOutput = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+    guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { try fail("cannot show exact note") }
+    return text.trimmingCharacters(in: .newlines)
+}
+func label(_ e: AXUIElement) -> String {
+    (attr(e, "AXAttributedDescription") as? NSAttributedString)?.string ?? (attr(e, "AXDescription") as? String ?? "")
+}
+func unique(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> AXUIElement {
+    let matches = elements(root).filter(predicate)
+    guard matches.count == 1 else { try fail("missing or ambiguous native control") }
+    return matches[0]
+}
+func click(_ e: AXUIElement) throws {
+    guard (attr(e, kAXEnabledAttribute) as? NSNumber)?.boolValue != false,
+          let position = attr(e, kAXPositionAttribute), let dimensions = attr(e, kAXSizeAttribute) else { try fail("native control unavailable") }
+    var point = CGPoint.zero; var size = CGSize.zero
+    AXValueGetValue(position as! AXValue, .cgPoint, &point)
+    AXValueGetValue(dimensions as! AXValue, .cgSize, &size)
+    guard size.width > 0, size.height > 0 else { try fail("native control not visible") }
+    point.x += size.width / 2; point.y += size.height / 2
+    if let activation = attr(e, "AXActivationPoint"), CFGetTypeID(activation) == AXValueGetTypeID() { AXValueGetValue(activation as! AXValue, .cgPoint, &point) }
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+    Thread.sleep(forTimeInterval: 0.35)
+}
+func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> AXUIElement {
+    for _ in 0..<20 {
+        let matches = elements(root).filter(predicate)
+        if matches.count == 1 { return matches[0] }
+        if matches.count > 1 { try fail("ambiguous native control") }
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+    try fail("native dialog did not reach expected state")
+}
+func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplication) throws -> [String: Any] {
+    guard let participants = request.participants, participants.count == 2,
+          Set(participants).count == 2, participants.allSatisfy({ $0.first == "+" && $0.dropFirst().allSatisfy(\.isNumber) }) else { try fail("two exact authorized participants required") }
+    if request.operation == "share" {
+        // This creates invitations only. Never re-invite or modify existing collaborations.
+        guard !elements(root).contains(where: { label($0) == "Collaborate" }) else { try fail("note already shared; verify participants instead") }
+        try click(unique(root) { label($0) == "Share" })
+        let popup = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXPopUpButton" && attr($0, kAXValueAttribute) as? String == "Collaborate" }
+        _ = popup
+        try click(unique(root) { label($0) == "Invite with Link" })
+        let sheet = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
+        let field = try unique(sheet) { attr($0, kAXRoleAttribute) as? String == "AXTextField" }
+        var tokenNames: [String] = []
+        for (index, phone) in participants.enumerated() {
+            try select(field, index)
+            try set(field, kAXSelectedTextAttribute, phone as CFString)
+            key(app, 36, [])
+            let suggestion = try waitFor(root) {
+                attr($0, kAXRoleAttribute) as? String == "AXStaticText" && (attr($0, kAXValueAttribute) as? String ?? "").hasPrefix(phone + " (")
+            }
+            let value = attr(suggestion, kAXValueAttribute) as! String
+            tokenNames.append(String(value.dropFirst(phone.count + 2).dropLast()))
+            try click(suggestion)
+            guard attr(field, kAXValueAttribute) as? String == String(repeating: "\u{fffc}", count: index + 1) else { try fail("recipient token not verified") }
+        }
+        let fields = elements(sheet).filter { attr($0, kAXRoleAttribute) as? String == "AXTextField" }
+        for name in tokenNames { guard fields.filter({ attr($0, kAXValueAttribute) as? String == name }).count == 1 else { try fail("recipient identity ambiguous") } }
+        wrote = true
+        try click(unique(sheet) { label($0) == "Copy Link" })
+        // iCloud can commit the collaboration before its Create Link sheet closes.
+        // A lingering sheet is an uncertain outcome, never a reason to click again.
+        _ = try waitFor(root) { label($0) == "Collaborate" && (attr($0,kAXEnabledAttribute) as? NSNumber)?.boolValue == true }
+    }
+    try click(unique(root) { label($0) == "Collaborate" })
+    try click(waitFor(root) { label($0) == "Manage Shared Note" })
+    let panel = try waitFor(root) { attr($0, "AXIdentifier") as? String == "share settings" }
+    let names = elements(panel).filter { attr($0, "AXIdentifier") as? String == "participantName" }.compactMap { attr($0, kAXValueAttribute) as? String }
+    for phone in participants { guard names.contains(String(phone.dropFirst())) else { try fail("persisted participant missing; reconcile sharing manually") } }
+    guard names.count == 3, elements(panel).contains(where: { attr($0, kAXValueAttribute) as? String == "Only people you invite" }) else { try fail("unexpected collaboration membership or access") }
+    if request.operation == "share", let expand = elements(panel).first(where: { label($0) == "Anyone can add more people" }), (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == true {
+        try click(expand)
+        guard (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == false else { try fail("participant expansion setting not verified") }
+    }
+    try click(unique(panel) { label($0) == "Done" })
+    return ["id": request.id, "participants": participants, "verified": true]
+}
+func run(_ request: Request) throws -> [String: Any] {
+    guard ["checklist", "add_checklist_item", "set_checked", "share", "participants"].contains(request.operation) else { try fail("unsupported operation") }
+    let lock = open((NSHomeDirectory() + "/Library/Caches/teslashibe-notes.lock"), O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+    guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { try fail("Notes automation busy") }
+    defer { close(lock) }
+    guard AXIsProcessTrusted() else { try fail("Accessibility permission required") }
+    let expected = try show(request.id)
+    Thread.sleep(forTimeInterval: 0.25)
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
+    let root = AXUIElementCreateApplication(app.processIdentifier)
+    let all = elements(root)
+    guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
+    let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
+    guard editors.count == 1 else { try fail("ambiguous note editor") }
+    let editor = editors[0]
+    let before = try content(editor)
+    guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
+    if request.operation == "share" || request.operation == "participants" { return try sharing(request, root, app) }
+    if request.operation == "set_checked" {
+        let matches = before.1.filter { $0.text == request.text }
+        guard matches.count == 1, let checked = request.checked else { try fail("item missing or ambiguous") }
+        if matches[0].checked != checked {
+            try select(editor, matches[0].location)
+            let current = try content(editor)
+            guard current.0 == before.0 && current.1 == before.1 else { try fail("note changed before mutation") }
+            wrote = true
+            key(app, 32, [.maskCommand, .maskShift])
+            let after = try content(editor)
+            let updated = after.1.filter { $0.text == request.text }
+            guard updated.count == 1, updated[0].checked == checked else { try fail("checkbox mutation not verified") }
+            let expectedItems = before.1.map { Item(text: $0.text, checked: $0.text == request.text ? checked : $0.checked, location: 0, length: 0) }.sorted { $0.text < $1.text }
+            let actualItems = after.1.map { Item(text: $0.text, checked: $0.checked, location: 0, length: 0) }.sorted { $0.text < $1.text }
+            guard actualItems == expectedItems else { try fail("concurrent checklist change; reconcile") }
+        }
+    } else if request.operation == "add_checklist_item" {
+        guard let text = request.text, !text.isEmpty, !text.contains(where: { $0.isNewline }), !before.1.contains(where: { $0.text == text }) else { try fail("empty, multiline, or duplicate item") }
+        let prefix = before.0.hasSuffix("\n") ? "" : "\n"
+        let location = (before.0 as NSString).length + (prefix as NSString).length
+        try select(editor, (before.0 as NSString).length)
+        guard try content(editor).0 == before.0 else { try fail("note changed before append") }
+        wrote = true
+        try set(editor, kAXSelectedTextAttribute, (prefix + text + "\n") as CFString)
+        try select(editor, location)
+        if !(try content(editor).1.contains(where: { $0.location == location })) {
+            key(app, 37, [.maskCommand, .maskShift])
+        }
+        let after = try content(editor)
+        guard after.0 == before.0 + prefix + text + "\n", after.1.filter({ $0.text == text && !$0.checked }).count == 1 else { try fail("native checklist append not verified") }
+    }
+    let result = try content(editor)
+    let data = try JSONEncoder().encode(result.1)
+    return ["id": request.id, "items": try JSONSerialization.jsonObject(with: data)]
+}
+do {
+    let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
+    let output = try run(request)
+    FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: output))
+} catch {
+    let message = (error as? Failure)?.message ?? "invalid request or native automation failure"
+    let output: [String: Any] = ["error": message, "uncertain": wrote]
+    FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: output))
+    exit(1)
+}
