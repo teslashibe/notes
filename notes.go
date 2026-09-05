@@ -24,8 +24,8 @@ var (
 	ErrOutputLimit  = errors.New("notes: subprocess output limit exceeded")
 )
 
-// Capabilities describes operations supported by the scripting interface, not
-// whether macOS has granted automation permission to the calling process.
+// Capabilities describes configured operations, not whether macOS has granted
+// Automation and Accessibility permission. Native operations require the helper.
 type Capabilities struct {
 	Read            bool
 	Create          bool

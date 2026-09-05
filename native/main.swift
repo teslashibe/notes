@@ -74,6 +74,7 @@ func unique(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> A
     return matches[0]
 }
 func click(_ e: AXUIElement) throws {
+    guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
     guard (attr(e, kAXEnabledAttribute) as? NSNumber)?.boolValue != false,
           let position = attr(e, kAXPositionAttribute), let dimensions = attr(e, kAXSizeAttribute) else { try fail("native control unavailable") }
     var point = CGPoint.zero; var size = CGSize.zero

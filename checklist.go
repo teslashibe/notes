@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -91,6 +92,9 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 	}
 	if c.NativeExecutable == "" {
 		return fail(ErrUnsupported, false)
+	}
+	if !filepath.IsAbs(c.NativeExecutable) {
+		return fail(ErrInvalidInput, false)
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err, false)
