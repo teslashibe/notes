@@ -313,7 +313,9 @@ const script = `function run(argv) {
         }
         var body = "<h1>" + html(input.title) + "</h1>";
         if (input.text) body += "<div>" + html(input.text) + "</div>";
-        var note = app.Note({name: input.title, body: body});
+        // Notes derives the title from the first heading. Supplying both name
+        // and a heading duplicates the visible title.
+        var note = app.Note({body: body});
         writing = true;
         folder.notes.push(note);
         return JSON.stringify({note: metadata(note, true)});
