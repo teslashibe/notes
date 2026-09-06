@@ -32,7 +32,11 @@ func nativeTestProcess() {
 	case "members":
 		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Verified: true, Participants: []string{"+19999999999", "+18888888888"}})
 	default:
-		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Items: []ChecklistItem{{Text: req.Text, Checked: req.Checked != nil && *req.Checked}}, Verified: true, Participants: req.Participants})
+		text := req.Text
+		if req.Operation == "edit_checklist_item" {
+			text = req.Replacement
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Items: []ChecklistItem{{Text: text, Checked: req.Checked != nil && *req.Checked}}, Verified: true, Participants: req.Participants, Deleted: req.Operation == "move_to_recently_deleted"})
 	}
 	os.Exit(0)
 }
@@ -57,6 +61,13 @@ func TestNativeChecklistLiteral(t *testing.T) {
 	if err != nil || !items[0].Checked {
 		t.Fatal(items, err)
 	}
+	items, err = c.EditChecklistItem(context.Background(), "opaque-id", text, "Oat milk")
+	if err != nil || len(items) != 1 || items[0].Text != "Oat milk" {
+		t.Fatal(items, err)
+	}
+	if err = c.MoveToRecentlyDeleted(context.Background(), "opaque-id"); err != nil {
+		t.Fatal(err)
+	}
 }
 func TestNativeValidation(t *testing.T) {
 	c := nativeHelper(t, "")
@@ -64,6 +75,10 @@ func TestNativeValidation(t *testing.T) {
 		_, err := c.AddChecklistItem(context.Background(), "id", text)
 		if !errors.Is(err, ErrInvalidInput) {
 			t.Fatal(text, err)
+		}
+		_, err = c.EditChecklistItem(context.Background(), "id", "old", text)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatal("replacement", text, err)
 		}
 	}
 	for _, phones := range [][]string{nil, {"+15555501001"}, {"+15555501001", "+15555501001"}, {"+15555501001", "arbitrary"}} {
@@ -94,6 +109,10 @@ func TestNativeUncertainty(t *testing.T) {
 			_, err = c.Checklist(context.Background(), "id")
 			if !errors.As(err, &op) || op.Uncertain {
 				t.Fatal(err)
+			}
+			err = c.MoveToRecentlyDeleted(context.Background(), "id")
+			if !errors.As(err, &op) || op.Uncertain != tc.uncertain {
+				t.Fatal("delete", err)
 			}
 		})
 	}

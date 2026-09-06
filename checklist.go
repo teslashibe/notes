@@ -23,6 +23,7 @@ type nativeRequest struct {
 	Operation    string   `json:"operation"`
 	ID           string   `json:"id"`
 	Text         string   `json:"text,omitempty"`
+	Replacement  string   `json:"replacement,omitempty"`
 	Participants []string `json:"participants,omitempty"`
 	Checked      *bool    `json:"checked,omitempty"`
 }
@@ -35,6 +36,7 @@ type nativeResponse struct {
 	Verified     bool            `json:"verified"`
 	Participants []string        `json:"participants"`
 	Uncertain    bool            `json:"uncertain"`
+	Deleted      bool            `json:"deleted"`
 }
 
 // Checklist reads actual native checked state using the installed native helper.
@@ -51,6 +53,22 @@ func (c Client) AddChecklistItem(ctx context.Context, id, text string) ([]Checkl
 // SetChecked changes one exact, unique native item; already-correct state is a no-op.
 func (c Client) SetChecked(ctx context.Context, id, text string, checked bool) ([]ChecklistItem, error) {
 	return c.native(ctx, nativeRequest{Operation: "set_checked", ID: id, Text: text, Checked: &checked})
+}
+
+// EditChecklistItem replaces the text of one exact, unique native checklist
+// item while preserving its checked state and native checklist formatting.
+func (c Client) EditChecklistItem(ctx context.Context, id, text, replacement string) ([]ChecklistItem, error) {
+	return c.native(ctx, nativeRequest{Operation: "edit_checklist_item", ID: id, Text: text, Replacement: replacement})
+}
+
+// MoveToRecentlyDeleted moves the exact note to Notes' recoverable Recently
+// Deleted folder and verifies that it is no longer active. It never permanently deletes.
+func (c Client) MoveToRecentlyDeleted(ctx context.Context, id string) error {
+	result, err := c.nativeCall(ctx, nativeRequest{Operation: "move_to_recently_deleted", ID: id})
+	if err == nil && !result.Deleted {
+		return &OperationError{Operation: "move_to_recently_deleted", Uncertain: true, Err: errors.New("native helper did not verify deleted state")}
+	}
+	return err
 }
 
 func (c Client) native(ctx context.Context, req nativeRequest) ([]ChecklistItem, error) {
@@ -86,6 +104,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 		return fail(ErrInvalidInput, false)
 	}
 	sharing := req.Operation == "share" || req.Operation == "participants" || req.Operation == "shared_link"
+	deleting := req.Operation == "move_to_recently_deleted"
 	if sharing {
 		if len(req.Participants) != 2 || req.Participants[0] == req.Participants[1] {
 			return fail(ErrInvalidInput, false)
@@ -96,7 +115,10 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 			}
 		}
 	}
-	if !sharing && req.Operation != "checklist" && (strings.TrimSpace(req.Text) == "" || !validText(req.Text) || strings.ContainsAny(req.Text, "\r\n\u2028\u2029") || len(req.Text) > 4096) {
+	if !sharing && !deleting && req.Operation != "checklist" && (strings.TrimSpace(req.Text) == "" || !validText(req.Text) || strings.ContainsAny(req.Text, "\r\n\u2028\u2029") || len(req.Text) > 4096) {
+		return fail(ErrInvalidInput, false)
+	}
+	if req.Operation == "edit_checklist_item" && (strings.TrimSpace(req.Replacement) == "" || !validText(req.Replacement) || strings.ContainsAny(req.Replacement, "\r\n\u2028\u2029") || len(req.Replacement) > 4096) {
 		return fail(ErrInvalidInput, false)
 	}
 	if c.NativeExecutable == "" {
@@ -155,7 +177,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 		if !result.Verified || len(result.Participants) != 2 || result.Participants[0] != req.Participants[0] || result.Participants[1] != req.Participants[1] {
 			return fail(errors.New("native helper did not verify exact participants"), uncertain)
 		}
-	} else if result.Items == nil {
+	} else if !deleting && result.Items == nil {
 		return fail(errors.New("native helper returned missing items"), uncertain)
 	}
 	for _, item := range result.Items {

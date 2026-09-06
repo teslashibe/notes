@@ -66,6 +66,36 @@ func show(_ id: String) throws -> String {
     guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { try fail("cannot show exact note") }
     return text.trimmingCharacters(in: .newlines)
 }
+func moveToRecentlyDeleted(_ id: String) throws -> [String: Any] {
+    // Notes' delete command is recoverable: it moves an active note to Recently
+    // Deleted. Resolve and validate the opaque ID before the only write, then
+    // verify the same ID is inactive and present in that folder afterward.
+    let source = """
+    function run(a){
+      const app=Application('Notes'), id=a[0], n=app.notes.byId(id);
+      if(!n.exists()||n.id()!==id)throw Error('note not found');
+      if(n.passwordProtected())throw Error('protected note');
+      const before=app.folders.whose({name:{_equals:'Recently Deleted'}})();
+      if(before.length!==1)throw Error('Recently Deleted folder missing or ambiguous');
+      app.delete(n);
+      delay(0.5);
+      const active=app.notes.byId(id);
+      const deleted=before[0].notes.whose({id:{_equals:id}})();
+      if(active.exists()||deleted.length!==1||deleted[0].id()!==id)throw Error('note move not verified');
+      return JSON.stringify({id:id,deleted:true});
+    }
+    """
+    let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = ["-l", "JavaScript", "-e", source, id]
+    let output = Pipe(); process.standardOutput = output
+    try process.run()
+    wrote = true
+    let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+    guard process.terminationStatus == 0,
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          object["id"] as? String == id, object["deleted"] as? Bool == true else { try fail("cannot verify exact note in Recently Deleted") }
+    return object
+}
 func label(_ e: AXUIElement) -> String {
     (attr(e, "AXAttributedDescription") as? NSAttributedString)?.string ?? (attr(e, "AXDescription") as? String ?? "")
 }
@@ -267,11 +297,12 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
     return result
 }
 func run(_ request: Request) throws -> [String: Any] {
-    guard ["checklist", "replace_text", "add_checklist_item", "set_checked", "share", "participants", "shared_link"].contains(request.operation) else { try fail("unsupported operation") }
+    guard ["checklist", "edit_checklist_item", "add_checklist_item", "set_checked", "share", "participants", "shared_link", "move_to_recently_deleted"].contains(request.operation) else { try fail("unsupported operation") }
     let lock = open((NSHomeDirectory() + "/Library/Caches/teslashibe-notes.lock"), O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { try fail("Notes automation busy") }
     defer { close(lock) }
     guard AXIsProcessTrusted() else { try fail("Accessibility permission required") }
+    if request.operation == "move_to_recently_deleted" { return try moveToRecentlyDeleted(request.id) }
     let expected = try show(request.id)
     Thread.sleep(forTimeInterval: 0.25)
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
@@ -285,18 +316,26 @@ func run(_ request: Request) throws -> [String: Any] {
     let before = try content(editor)
     guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
     if request.operation == "share" || request.operation == "participants" || request.operation == "shared_link" { return try sharing(request, root, app) }
-    if request.operation == "replace_text" {
-        guard let old = request.text, !old.isEmpty, let replacement = request.replacement else { try fail("exact replacement required") }
+    if request.operation == "edit_checklist_item" {
+        guard let old = request.text, !old.isEmpty, let replacement = request.replacement, !replacement.isEmpty else { try fail("exact checklist replacement required") }
+        let matches = before.1.filter { $0.text == old }
+        guard matches.count == 1 else { try fail("checklist item missing or ambiguous") }
+        guard !before.1.contains(where: { $0.text == replacement && $0.location != matches[0].location }) else { try fail("replacement would duplicate checklist item") }
+        let target = matches[0]
         let source = before.0 as NSString
-        let range = source.range(of: old)
-        guard range.location != NSNotFound, source.range(of: old, options: [], range: NSRange(location: range.location + range.length, length: source.length - range.location - range.length)).location == NSNotFound else { try fail("replacement target missing or ambiguous") }
-        try select(editor, range.location, range.length)
+        let newlineLength = target.length - (target.text as NSString).length
+        guard newlineLength >= 0 else { try fail("invalid checklist item range") }
+        try select(editor, target.location, target.length - newlineLength)
         guard try content(editor).0 == before.0 else { try fail("note changed before edit") }
         wrote = true
         try set(editor, kAXSelectedTextAttribute, replacement as CFString)
         let after = try content(editor)
-        guard after.0 == source.replacingCharacters(in: range, with: replacement), after.1.count == before.1.count,
-              zip(after.1, before.1).allSatisfy({ $0.checked == $1.checked }) else { try fail("replacement or checklist state not verified") }
+        let expectedText = source.replacingCharacters(in: NSRange(location: target.location, length: target.length - newlineLength), with: replacement)
+        guard after.0 == expectedText, after.1.count == before.1.count,
+              after.1.filter({ $0.text == replacement && $0.checked == target.checked }).count == 1,
+              zip(after.1, before.1).allSatisfy({ current, previous in
+                  previous.location == target.location || (current.text == previous.text && current.checked == previous.checked)
+              }) else { try fail("replacement or native checklist state not verified") }
     } else if request.operation == "set_checked" {
         let matches = before.1.filter { $0.text == request.text }
         guard matches.count == 1, let checked = request.checked else { try fail("item missing or ambiguous") }
