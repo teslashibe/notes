@@ -311,8 +311,9 @@ func run(_ request: Request) throws -> [String: Any] {
     let all = elements(root)
     guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
     let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
-    guard editors.count == 1 else { try fail("ambiguous note editor") }
-    let editor = editors[0]
+    let matched = try editors.filter { try content($0).0.trimmingCharacters(in: .newlines) == expected }
+    guard matched.count == 1 else { try fail("ambiguous note editor") }
+    let editor = matched[0]
     let before = try content(editor)
     guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
     if request.operation == "share" || request.operation == "participants" || request.operation == "shared_link" { return try sharing(request, root, app) }
