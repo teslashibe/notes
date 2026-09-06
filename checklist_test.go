@@ -29,6 +29,10 @@ func nativeTestProcess() {
 		time.Sleep(time.Minute)
 	case "wrong":
 		fmt.Print(`{"id":"wrong","items":[]}`)
+	case "extra":
+		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Verified: true, Participants: append(req.Participants, "+19999999999")})
+	case "duplicate":
+		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Verified: true, Participants: []string{req.Participants[0], req.Participants[0]}})
 	case "members":
 		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Verified: true, Participants: []string{"+19999999999", "+18888888888"}})
 	default:
@@ -81,7 +85,7 @@ func TestNativeValidation(t *testing.T) {
 			t.Fatal("replacement", text, err)
 		}
 	}
-	for _, phones := range [][]string{nil, {"+15555501001"}, {"+15555501001", "+15555501001"}, {"+15555501001", "arbitrary"}} {
+	for _, phones := range [][]string{nil, {"+15555501001", "+15555501002", "+19999999999"}, {""}, {"+１２３４５６７８９"}, {"+15555501001", "+15555501001"}, {"+15555501001", "arbitrary"}} {
 		if !errors.Is(c.Share(context.Background(), "id", phones), ErrInvalidInput) {
 			t.Fatal(phones)
 		}
@@ -118,13 +122,21 @@ func TestNativeUncertainty(t *testing.T) {
 	}
 }
 func TestNativeParticipants(t *testing.T) {
-	phones := []string{"+15555501001", "+15555501002"}
-	c := nativeHelper(t, "")
-	if err := c.Share(context.Background(), "id", phones); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("NOTES_NATIVE_MODE", "members")
-	if err := c.VerifyParticipants(context.Background(), "id", phones); err == nil {
-		t.Fatal("accepted mismatched participants")
+	for _, phones := range [][]string{{"+15555501001"}, {"+15555501001", "+15555501002"}} {
+		t.Run(fmt.Sprint(len(phones)), func(t *testing.T) {
+			c := nativeHelper(t, "")
+			if err := c.Share(context.Background(), "id", phones); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.VerifyParticipants(context.Background(), "id", phones); err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []string{"members", "extra", "duplicate"} {
+				t.Setenv("NOTES_NATIVE_MODE", mode)
+				if err := c.VerifyParticipants(context.Background(), "id", phones); err == nil {
+					t.Fatal("accepted mismatched participants", mode)
+				}
+			}
+		})
 	}
 }

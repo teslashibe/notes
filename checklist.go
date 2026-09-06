@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -106,7 +107,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 	sharing := req.Operation == "share" || req.Operation == "participants" || req.Operation == "shared_link"
 	deleting := req.Operation == "move_to_recently_deleted"
 	if sharing {
-		if len(req.Participants) != 2 || req.Participants[0] == req.Participants[1] {
+		if len(req.Participants) < 1 || len(req.Participants) > 2 || (len(req.Participants) == 2 && req.Participants[0] == req.Participants[1]) {
 			return fail(ErrInvalidInput, false)
 		}
 		for _, phone := range req.Participants {
@@ -174,7 +175,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 		return fail(errors.New("native helper returned mismatched note"), uncertain)
 	}
 	if sharing {
-		if !result.Verified || len(result.Participants) != 2 || result.Participants[0] != req.Participants[0] || result.Participants[1] != req.Participants[1] {
+		if !result.Verified || !slices.Equal(result.Participants, req.Participants) {
 			return fail(errors.New("native helper did not verify exact participants"), uncertain)
 		}
 	} else if !deleting && result.Items == nil {

@@ -179,8 +179,8 @@ func waitUntilGone(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) thro
     try fail("native dialog did not close")
 }
 func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplication) throws -> [String: Any] {
-    guard let participants = request.participants, participants.count == 2,
-          Set(participants).count == 2, participants.allSatisfy({ $0.first == "+" && $0.dropFirst().allSatisfy(\.isNumber) }) else { try fail("two exact authorized participants required") }
+    guard let participants = request.participants, (1...2).contains(participants.count),
+          Set(participants).count == participants.count, participants.allSatisfy({ (8...16).contains($0.count) && $0.first == "+" && $0.dropFirst().allSatisfy({ ("0"..."9").contains($0) }) }) else { try fail("one or two exact distinct authorized participants required") }
     guard !elements(root).contains(where: { ["AXSheet", "AXPopover"].contains(attr($0, kAXRoleAttribute) as? String ?? "") }) else { try fail("existing Notes modal; refusing to take ownership") }
     var collaborationVerified = false
     var result: [String: Any] = ["id": request.id, "participants": participants, "verified": true]
@@ -273,7 +273,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
     let panel = try waitFor(root) { attr($0, "AXIdentifier") as? String == "share settings" }
     let names = elements(panel).filter { attr($0, "AXIdentifier") as? String == "participantName" }.compactMap { attr($0, kAXValueAttribute) as? String }
     for phone in participants { guard names.contains(String(phone.dropFirst())) else { try fail("persisted participant missing; reconcile sharing manually") } }
-    guard names.count == 3, elements(panel).contains(where: { attr($0, kAXValueAttribute) as? String == "Only people you invite" }) else { try fail("unexpected collaboration membership or access") }
+    guard names.count == participants.count + 1, Set(names).count == names.count, elements(panel).contains(where: { attr($0, kAXValueAttribute) as? String == "Only people you invite" }) else { try fail("unexpected collaboration membership or access") }
     if request.operation == "share", let expand = elements(panel).first(where: { label($0) == "Anyone can add more people" }), (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == true {
         try click(expand, named: "participant expansion")
         guard (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == false else { try fail("participant expansion setting not verified") }
