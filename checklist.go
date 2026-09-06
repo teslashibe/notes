@@ -133,10 +133,11 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 	}
 	timeout := c.Timeout
 	if timeout == 0 {
-		timeout = 20 * time.Second
-	}
-	if sharing {
-		timeout = time.Minute
+		if sharing {
+			timeout = time.Minute
+		} else {
+			timeout = 20 * time.Second
+		}
 	} else if timeout > time.Minute {
 		timeout = time.Minute
 	}

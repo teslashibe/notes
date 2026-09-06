@@ -121,6 +121,16 @@ func TestNativeUncertainty(t *testing.T) {
 		})
 	}
 }
+func TestNativeShareTimeout(t *testing.T) {
+	c := nativeHelper(t, "timeout")
+	c.Timeout = 20 * time.Millisecond
+	start := time.Now()
+	err := c.Share(context.Background(), "id", []string{"+15555501001"})
+	var op *OperationError
+	if !errors.As(err, &op) || !op.Uncertain || time.Since(start) > time.Second {
+		t.Fatal(err, time.Since(start))
+	}
+}
 func TestNativeParticipants(t *testing.T) {
 	for _, phones := range [][]string{{"+15555501001"}, {"+15555501001", "+15555501002"}} {
 		t.Run(fmt.Sprint(len(phones)), func(t *testing.T) {

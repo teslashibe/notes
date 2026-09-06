@@ -44,7 +44,8 @@ type Client struct {
 	NativeExecutable string
 	AccountID        string
 	FolderID         string
-	// Timeout defaults to 20 seconds and cannot exceed one minute.
+	// Timeout defaults to 20 seconds, or one minute for share/participants/shared_link,
+	// and cannot exceed one minute.
 	Timeout time.Duration
 
 	// Private test seam; production always executes /usr/bin/osascript directly.
