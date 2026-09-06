@@ -141,6 +141,13 @@ func waitUntil(_ predicate: () -> Bool) throws {
     }
     try fail("native dialog did not reach expected state")
 }
+func waitUntilGone(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws {
+    for _ in 0..<20 {
+        if !elements(root).contains(where: predicate) { return }
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+    try fail("native dialog did not close")
+}
 func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplication) throws -> [String: Any] {
     guard let participants = request.participants, participants.count == 2,
           Set(participants).count == 2, participants.allSatisfy({ $0.first == "+" && $0.dropFirst().allSatisfy(\.isNumber) }) else { try fail("two exact authorized participants required") }
@@ -163,7 +170,9 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
     }
     if request.operation == "share" {
         // This creates invitations only. Never re-invite or modify existing collaborations.
-        guard !elements(root).contains(where: { label($0) == "Collaborate" }) else { try fail("note already shared; verify participants instead") }
+        if elements(root).contains(where: { label($0) == "Collaborate" }) {
+            try fail("note already shared; use shared_link")
+        }
         try click(unique(root) {
             (attr($0, kAXRoleAttribute) as? String) == (kAXButtonRole as String) &&
             label($0) == "Share" &&
@@ -223,9 +232,10 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
             Thread.sleep(forTimeInterval: 0.1)
         }
         guard let collaborationLink else { try fail("fresh collaboration link was not captured while sharing remained open") }
-        // iCloud may close its creation sheet after copying. That is only an
-        // intermediate state; persisted collaboration still must be verified.
-        _ = try waitFor(root) { label($0) == "Collaborate" && (attr($0,kAXEnabledAttribute) as? NSNumber)?.boolValue == true }
+        // Copy Link leaves the creation sheet open on macOS 26. Close it only
+        // after validating the fresh URL, then verify persisted collaboration.
+        try key(app, 53, [])
+        try waitUntilGone(root) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
         result["link"] = collaborationLink
     }
     try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
