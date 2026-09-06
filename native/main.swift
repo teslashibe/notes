@@ -14,7 +14,50 @@ func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
 }
 func elements(_ e: AXUIElement, _ depth: Int = 0) -> [AXUIElement] {
     if depth > 14 { return [] }
-    return [e] + (attr(e, "AXChildren") as? [AXUIElement] ?? []).prefix(200).flatMap { elements($0, depth + 1) }
+    return [e] + (attr(e, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(200).flatMap { elements($0, depth + 1) }
+}
+func element(_ value: CFTypeRef) -> AXUIElement {
+    unsafeBitCast(value, to: AXUIElement.self)
+}
+func windows(_ root: AXUIElement) -> [AXUIElement] {
+    var found: [AXUIElement] = []
+    if let list = attr(root, kAXWindowsAttribute) as? [AXUIElement] { found.append(contentsOf: list) }
+    for key in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+        if let value = attr(root, key) { found.append(element(value)) }
+    }
+    return found.isEmpty ? [root] : found
+}
+func sameNote(_ expected: String, _ editor: String) -> Bool {
+    let shown = expected.trimmingCharacters(in: .newlines)
+    let body = editor.trimmingCharacters(in: .newlines)
+    if shown == body { return true }
+    if let rest = shown.split(separator: "\n", maxSplits: 1).last, String(rest).trimmingCharacters(in: .newlines) == body { return true }
+    if let rest = body.split(separator: "\n", maxSplits: 1).last, String(rest).trimmingCharacters(in: .newlines) == shown { return true }
+    return false
+}
+func isEditor(_ e: AXUIElement) -> Bool {
+    if attr(e, "AXIdentifier") as? String == "Note Body Text View" { return true }
+    let role = attr(e, kAXRoleAttribute) as? String
+    guard role == "AXTextArea" || role == "AXTextView", let text = attr(e, kAXValueAttribute) as? String else { return false }
+    var range = CFRange(location: 0, length: max((text as NSString).length, 1))
+    var value: CFTypeRef?
+    return AXUIElementCopyParameterizedAttributeValue(e, "AXAttributedStringForRange" as CFString, AXValueCreate(.cfRange, &range)!, &value) == .success
+}
+func editors(in root: AXUIElement) -> [AXUIElement] {
+    var found: [AXUIElement] = []
+    for window in windows(root) {
+        found.append(contentsOf: elements(window).filter(isEditor))
+    }
+    if let focused = attr(root, kAXFocusedUIElementAttribute) {
+        let current = element(focused)
+        if isEditor(current) { found.append(current) }
+        found.append(contentsOf: elements(current).filter(isEditor))
+    }
+    var unique: [AXUIElement] = []
+    for editor in found where !unique.contains(where: { CFEqual($0, editor) }) {
+        unique.append(editor)
+    }
+    return unique
 }
 func set(_ e: AXUIElement, _ key: String, _ value: CFTypeRef) throws {
     guard AXUIElementSetAttributeValue(e, key as CFString, value) == .success else { try fail("accessibility selection failed") }
@@ -155,8 +198,8 @@ func clickVisible(_ e: AXUIElement, named operation: String) throws {
     }
     try fail("\(operation) has no visible bounds")
 }
-func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> AXUIElement {
-    for _ in 0..<20 {
+func waitFor(_ root: AXUIElement, _ attempts: Int = 20, _ predicate: (AXUIElement) -> Bool) throws -> AXUIElement {
+    for _ in 0..<attempts {
         let matches = elements(root).filter(predicate)
         if matches.count == 1 { return matches[0] }
         if matches.count > 1 { try fail("ambiguous native control") }
@@ -164,23 +207,23 @@ func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> 
     }
     try fail("native dialog did not reach expected state")
 }
-func waitUntil(_ predicate: () -> Bool) throws {
-    for _ in 0..<20 {
+func waitUntil(_ attempts: Int = 20, _ predicate: () -> Bool) throws {
+    for _ in 0..<attempts {
         if predicate() { return }
         Thread.sleep(forTimeInterval: 0.2)
     }
     try fail("native dialog did not reach expected state")
 }
-func waitUntilGone(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws {
-    for _ in 0..<20 {
+func waitUntilGone(_ root: AXUIElement, _ attempts: Int = 20, _ predicate: (AXUIElement) -> Bool) throws {
+    for _ in 0..<attempts {
         if !elements(root).contains(where: predicate) { return }
         Thread.sleep(forTimeInterval: 0.2)
     }
     try fail("native dialog did not close")
 }
 func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplication) throws -> [String: Any] {
-    guard let participants = request.participants, participants.count == 2,
-          Set(participants).count == 2, participants.allSatisfy({ $0.first == "+" && $0.dropFirst().allSatisfy(\.isNumber) }) else { try fail("two exact authorized participants required") }
+    guard let participants = request.participants, (1...2).contains(participants.count),
+          Set(participants).count == participants.count, participants.allSatisfy({ (8...16).contains($0.count) && $0.first == "+" && $0.dropFirst().allSatisfy({ ("0"..."9").contains($0) }) }) else { try fail("one or two exact distinct authorized participants required") }
     guard !elements(root).contains(where: { ["AXSheet", "AXPopover"].contains(attr($0, kAXRoleAttribute) as? String ?? "") }) else { try fail("existing Notes modal; refusing to take ownership") }
     var collaborationVerified = false
     var result: [String: Any] = ["id": request.id, "participants": participants, "verified": true]
@@ -198,6 +241,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
             }
         }
     }
+    let shareWait = 75
     if request.operation == "share" {
         // This creates invitations only. Never re-invite or modify existing collaborations.
         if elements(root).contains(where: { label($0) == "Collaborate" }) {
@@ -208,26 +252,25 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
             label($0) == "Share" &&
             (attr($0, kAXEnabledAttribute) as? NSNumber)?.boolValue != false
         }, named: "Share")
-        let popup = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXPopUpButton" && attr($0, kAXValueAttribute) as? String == "Collaborate" }
-        _ = popup
+        _ = try waitFor(root, shareWait) { attr($0, kAXRoleAttribute) as? String == "AXPopUpButton" && attr($0, kAXValueAttribute) as? String == "Collaborate" }
         try click(unique(root) {
             label($0) == "Invite with Link" &&
             ["AXButton", "AXMenuItem"].contains(attr($0, kAXRoleAttribute) as? String ?? "")
         }, named: "Invite with Link")
-        let sheet = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
+        let sheet = try waitFor(root, shareWait) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
         let field = try unique(sheet) { attr($0, kAXRoleAttribute) as? String == "AXTextField" }
         var tokenNames: [String] = []
         for (index, phone) in participants.enumerated() {
             try select(field, index)
             try set(field, kAXSelectedTextAttribute, phone as CFString)
             try key(app, 36, [])
-            let suggestion = try waitFor(root) {
+            let suggestion = try waitFor(root, shareWait) {
                 attr($0, kAXRoleAttribute) as? String == "AXStaticText" && (attr($0, kAXValueAttribute) as? String ?? "").hasPrefix(phone + " (")
             }
             let value = attr(suggestion, kAXValueAttribute) as! String
             tokenNames.append(String(value.dropFirst(phone.count + 2).dropLast()))
             try clickVisible(suggestion, named: "recipient suggestion")
-            try waitUntil {
+            try waitUntil(shareWait) {
                 let current = attr(field, kAXValueAttribute) as? String ?? ""
                 return current == String(repeating: "\u{fffc}", count: index + 1) ||
                     elements(sheet).contains {
@@ -265,15 +308,15 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
         // Copy Link leaves the creation sheet open on macOS 26. Close it only
         // after validating the fresh URL, then verify persisted collaboration.
         try key(app, 53, [])
-        try waitUntilGone(root) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
+        try waitUntilGone(root, shareWait) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
         result["link"] = collaborationLink
     }
     try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
-    try click(waitFor(root) { label($0) == "Manage Shared Note" }, named: "Manage Shared Note")
-    let panel = try waitFor(root) { attr($0, "AXIdentifier") as? String == "share settings" }
+    try click(waitFor(root, shareWait) { label($0) == "Manage Shared Note" }, named: "Manage Shared Note")
+    let panel = try waitFor(root, shareWait) { attr($0, "AXIdentifier") as? String == "share settings" }
     let names = elements(panel).filter { attr($0, "AXIdentifier") as? String == "participantName" }.compactMap { attr($0, kAXValueAttribute) as? String }
     for phone in participants { guard names.contains(String(phone.dropFirst())) else { try fail("persisted participant missing; reconcile sharing manually") } }
-    guard names.count == 3, elements(panel).contains(where: { attr($0, kAXValueAttribute) as? String == "Only people you invite" }) else { try fail("unexpected collaboration membership or access") }
+    guard names.count == participants.count + 1, Set(names).count == names.count, elements(panel).contains(where: { attr($0, kAXValueAttribute) as? String == "Only people you invite" }) else { try fail("unexpected collaboration membership or access") }
     if request.operation == "share", let expand = elements(panel).first(where: { label($0) == "Anyone can add more people" }), (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == true {
         try click(expand, named: "participant expansion")
         guard (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == false else { try fail("participant expansion setting not verified") }
@@ -282,7 +325,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
     collaborationVerified = true
     if request.operation == "shared_link" {
         try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
-        let copy = try waitFor(root) { label($0) == "Copy Link" }
+        let copy = try waitFor(root, shareWait) { label($0) == "Copy Link" }
         let previous = NSPasteboard.general.changeCount
         try click(copy, named: "Copy Link")
         for _ in 0..<40 {
@@ -308,14 +351,17 @@ func run(_ request: Request) throws -> [String: Any] {
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
     let root = AXUIElementCreateApplication(app.processIdentifier)
     guard AXUIElementSetMessagingTimeout(root, 2) == .success else { try fail("cannot bound Notes accessibility calls") }
-    let all = elements(root)
-    guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
-    let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
-    let matched = try editors.filter { try content($0).0.trimmingCharacters(in: .newlines) == expected }
+    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow" {
+        try fail("Notes editor unavailable while the Mac is locked")
+    }
+    guard !windows(root).contains(where: { elements($0).contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) }) else { try fail("Notes has a modal dialog; finish it manually") }
+    let candidates = editors(in: root)
+    let matched = candidates.filter { sameNote(expected, (attr($0, kAXValueAttribute) as? String) ?? "") }
+    if matched.isEmpty { try fail(candidates.isEmpty ? "note editor not found" : "note editor does not match opened note") }
     guard matched.count == 1 else { try fail("ambiguous note editor") }
     let editor = matched[0]
     let before = try content(editor)
-    guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
+    guard sameNote(expected, before.0) else { try fail("note editor identity or content changed") }
     if request.operation == "share" || request.operation == "participants" || request.operation == "shared_link" { return try sharing(request, root, app) }
     if request.operation == "edit_checklist_item" {
         guard let old = request.text, !old.isEmpty, let replacement = request.replacement, !replacement.isEmpty else { try fail("exact checklist replacement required") }
