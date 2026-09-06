@@ -74,7 +74,7 @@ func unique(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> A
     guard matches.count == 1 else { try fail("missing or ambiguous native control") }
     return matches[0]
 }
-func click(_ e: AXUIElement) throws {
+func click(_ e: AXUIElement, named operation: String = "control") throws {
     guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
     // Never use global coordinate clicks: a share picker or focus change can
     // redirect them to an unrelated target. Labels in SwiftUI often resolve to
@@ -101,7 +101,29 @@ func click(_ e: AXUIElement) throws {
         guard let parent = attr(candidate, kAXParentAttribute) else { current = nil; continue }
         current = unsafeBitCast(parent, to: AXUIElement.self)
     }
-    try fail(sawEnabledAction ? "safe accessibility action failed" : "native control and ancestors support neither safe press nor menu")
+    try fail(sawEnabledAction ? "\(operation) accessibility action failed" : "\(operation) and ancestors support neither safe press nor menu")
+}
+func clickVisible(_ e: AXUIElement, named operation: String) throws {
+    if let positionRef = attr(e, kAXPositionAttribute),
+       let sizeRef = attr(e, kAXSizeAttribute) {
+        let position = positionRef as! AXValue
+        let size = sizeRef as! AXValue
+        var point = CGPoint.zero
+        var dimensions = CGSize.zero
+        guard AXValueGetValue(position, .cgPoint, &point),
+              AXValueGetValue(size, .cgSize, &dimensions),
+              dimensions.width > 0, dimensions.height > 0 else { try fail("\(operation) has no visible bounds") }
+        let target = CGPoint(x: point.x + dimensions.width / 2, y: point.y + dimensions.height / 2)
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(target.x), Float(target.y), &hit) == .success,
+              let hit, label(hit) == label(e) else { try fail("\(operation) hit target was not verified") }
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left) else { try fail("\(operation) click could not be created") }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        return
+    }
+    try fail("\(operation) has no visible bounds")
 }
 func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> AXUIElement {
     for _ in 0..<20 {
@@ -112,27 +134,47 @@ func waitFor(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> 
     }
     try fail("native dialog did not reach expected state")
 }
+func waitUntil(_ predicate: () -> Bool) throws {
+    for _ in 0..<20 {
+        if predicate() { return }
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+    try fail("native dialog did not reach expected state")
+}
 func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplication) throws -> [String: Any] {
     guard let participants = request.participants, participants.count == 2,
           Set(participants).count == 2, participants.allSatisfy({ $0.first == "+" && $0.dropFirst().allSatisfy(\.isNumber) }) else { try fail("two exact authorized participants required") }
     guard !elements(root).contains(where: { ["AXSheet", "AXPopover"].contains(attr($0, kAXRoleAttribute) as? String ?? "") }) else { try fail("existing Notes modal; refusing to take ownership") }
+    var collaborationVerified = false
+    var result: [String: Any] = ["id": request.id, "participants": participants, "verified": true]
     defer {
-        let sheets = elements(root).filter { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
-        if sheets.count == 1 {
-            let cancel = elements(sheets[0]).filter { attr($0, kAXRoleAttribute) as? String == "AXButton" && label($0) == "Cancel" }
-            if cancel.count == 1 { _ = AXUIElementPerformAction(cancel[0], kAXPressAction as CFString) }
-        } else if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
-              elements(root).contains(where: { attr($0, kAXRoleAttribute) as? String == "AXPopover" }) {
-            try? key(app, 53, [])
+        // Once recipient entry begins, dismissal can cancel an in-flight
+        // collaboration. Only close UI after the collaboration is verified.
+        if collaborationVerified {
+            let sheets = elements(root).filter { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
+            if sheets.count == 1 {
+                let cancel = elements(sheets[0]).filter { attr($0, kAXRoleAttribute) as? String == "AXButton" && label($0) == "Cancel" }
+                if cancel.count == 1 { _ = AXUIElementPerformAction(cancel[0], kAXPressAction as CFString) }
+            } else if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+                      elements(root).contains(where: { attr($0, kAXRoleAttribute) as? String == "AXPopover" }) {
+                try? key(app, 53, [])
+            }
         }
     }
     if request.operation == "share" {
         // This creates invitations only. Never re-invite or modify existing collaborations.
         guard !elements(root).contains(where: { label($0) == "Collaborate" }) else { try fail("note already shared; verify participants instead") }
-        try click(unique(root) { (attr($0, kAXRoleAttribute) as? String) == (kAXButtonRole as String) && label($0) == "Share" })
+        try click(unique(root) {
+            (attr($0, kAXRoleAttribute) as? String) == (kAXButtonRole as String) &&
+            label($0) == "Share" &&
+            (attr($0, kAXEnabledAttribute) as? NSNumber)?.boolValue != false
+        }, named: "Share")
         let popup = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXPopUpButton" && attr($0, kAXValueAttribute) as? String == "Collaborate" }
         _ = popup
-        try click(unique(root) { label($0) == "Invite with Link" })
+        try click(unique(root) {
+            label($0) == "Invite with Link" &&
+            ["AXButton", "AXMenuItem"].contains(attr($0, kAXRoleAttribute) as? String ?? "")
+        }, named: "Invite with Link")
         let sheet = try waitFor(root) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
         let field = try unique(sheet) { attr($0, kAXRoleAttribute) as? String == "AXTextField" }
         var tokenNames: [String] = []
@@ -145,34 +187,64 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
             }
             let value = attr(suggestion, kAXValueAttribute) as! String
             tokenNames.append(String(value.dropFirst(phone.count + 2).dropLast()))
-            try click(suggestion)
-            guard attr(field, kAXValueAttribute) as? String == String(repeating: "\u{fffc}", count: index + 1) else { try fail("recipient token not verified") }
+            try clickVisible(suggestion, named: "recipient suggestion")
+            try waitUntil {
+                let current = attr(field, kAXValueAttribute) as? String ?? ""
+                return current == String(repeating: "\u{fffc}", count: index + 1) ||
+                    elements(sheet).contains {
+                        (attr($0, kAXValueAttribute) as? String) == tokenNames.last || label($0) == tokenNames.last
+                    }
+            }
         }
-        let fields = elements(sheet).filter { attr($0, kAXRoleAttribute) as? String == "AXTextField" }
-        for name in tokenNames { guard fields.filter({ attr($0, kAXValueAttribute) as? String == name }).count == 1 else { try fail("recipient identity ambiguous") } }
+        let sheetElements = elements(sheet)
+        for name in tokenNames {
+            let matches = sheetElements.filter {
+                (attr($0, kAXValueAttribute) as? String) == name || label($0) == name
+            }
+            guard matches.count >= 1 else { try fail("recipient identity ambiguous") }
+        }
+        let clipboardBaseline = NSPasteboard.general.changeCount
         wrote = true
-        try click(unique(sheet) { label($0) == "Copy Link" })
-        // iCloud can commit the collaboration before its Create Link sheet closes.
-        // A lingering sheet is an uncertain outcome, never a reason to click again.
+        let copyControls = elements(sheet).filter { label($0) == "Copy Link" }
+        guard let copyControl = copyControls.first(where: {
+            (attr($0, kAXEnabledAttribute) as? NSNumber)?.boolValue == true &&
+            ["AXButton", "AXMenuItem"].contains(attr($0, kAXRoleAttribute) as? String ?? "")
+        }) else { try fail("enabled Create Link control not found") }
+        try click(copyControl, named: "Create Link")
+        var collaborationLink: String?
+        for _ in 0..<100 {
+            if NSPasteboard.general.changeCount != clipboardBaseline,
+               let candidate = NSPasteboard.general.string(forType: .string),
+               let url = URL(string: candidate), url.scheme == "https",
+               url.host == "www.icloud.com", url.path.hasPrefix("/notes/") {
+                collaborationLink = candidate
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        guard let collaborationLink else { try fail("fresh collaboration link was not captured while sharing remained open") }
+        // iCloud may close its creation sheet after copying. That is only an
+        // intermediate state; persisted collaboration still must be verified.
         _ = try waitFor(root) { label($0) == "Collaborate" && (attr($0,kAXEnabledAttribute) as? NSNumber)?.boolValue == true }
+        result["link"] = collaborationLink
     }
-    try click(unique(root) { label($0) == "Collaborate" })
-    try click(waitFor(root) { label($0) == "Manage Shared Note" })
+    try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
+    try click(waitFor(root) { label($0) == "Manage Shared Note" }, named: "Manage Shared Note")
     let panel = try waitFor(root) { attr($0, "AXIdentifier") as? String == "share settings" }
     let names = elements(panel).filter { attr($0, "AXIdentifier") as? String == "participantName" }.compactMap { attr($0, kAXValueAttribute) as? String }
     for phone in participants { guard names.contains(String(phone.dropFirst())) else { try fail("persisted participant missing; reconcile sharing manually") } }
     guard names.count == 3, elements(panel).contains(where: { attr($0, kAXValueAttribute) as? String == "Only people you invite" }) else { try fail("unexpected collaboration membership or access") }
     if request.operation == "share", let expand = elements(panel).first(where: { label($0) == "Anyone can add more people" }), (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == true {
-        try click(expand)
+        try click(expand, named: "participant expansion")
         guard (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == false else { try fail("participant expansion setting not verified") }
     }
-    try click(unique(panel) { label($0) == "Done" })
-    var result: [String: Any] = ["id": request.id, "participants": participants, "verified": true]
+    try click(unique(panel) { label($0) == "Done" }, named: "Done")
+    collaborationVerified = true
     if request.operation == "shared_link" {
-        try click(unique(root) { label($0) == "Collaborate" })
+        try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
         let copy = try waitFor(root) { label($0) == "Copy Link" }
         let previous = NSPasteboard.general.changeCount
-        try click(copy)
+        try click(copy, named: "Copy Link")
         for _ in 0..<40 {
             if NSPasteboard.general.changeCount != previous { break }
             Thread.sleep(forTimeInterval: 0.1)
