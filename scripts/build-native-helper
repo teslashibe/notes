@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+output=${1:-"$repo/.build/notes-native-helper"}
+
+case "$output" in
+  "$repo/native"/*)
+    echo "refusing to write build output into native source" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$(dirname -- "$output")"
+swiftc "$repo/native/main.swift" -o "$output"
+printf '%s\n' "Built unsigned helper: $output"
+printf '%s\n' "Signing, installation, and macOS permission grants are separate operator actions."
