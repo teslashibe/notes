@@ -69,6 +69,33 @@ func TestNativeChecklistLiteral(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeDeletionVerifiesFolderWithoutRequiringItBeforeDelete(t *testing.T) {
+	data, err := os.ReadFile("native/main.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	if strings.Contains(source, "Recently Deleted folder missing or ambiguous") {
+		t.Fatal("deletion still requires a pre-existing Recently Deleted folder")
+	}
+	for _, want := range []string{
+		"note already in Recently Deleted",
+		"app.delete(n)",
+		"current.container().name()==='Recently Deleted'",
+		"folder.notes.whose({id:{_equals:id}})()",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("native deletion lost %q verification", want)
+		}
+	}
+	checked := strings.Index(source, "let checked = try execute(preflight)")
+	wrote := strings.Index(source, "wrote = true")
+	if checked < 0 || wrote < 0 || checked > wrote {
+		t.Fatal("deletion marks uncertainty before its read-only preflight")
+	}
+}
+
 func TestNativeValidation(t *testing.T) {
 	c := nativeHelper(t, "")
 	for _, text := range []string{"", "\n", "two\nlines", "two\u2028lines", strings.Repeat("x", 4097)} {

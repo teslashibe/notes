@@ -68,31 +68,62 @@ func show(_ id: String) throws -> String {
 }
 func moveToRecentlyDeleted(_ id: String) throws -> [String: Any] {
     // Notes' delete command is recoverable: it moves an active note to Recently
-    // Deleted. Resolve and validate the opaque ID before the only write, then
-    // verify the same ID is inactive and present in that folder afterward.
-    let source = """
+    // Deleted. Validate the opaque ID in a read-only process first. The mutation
+    // repeats those checks immediately before delete, then verifies the same ID
+    // is in Recently Deleted. Notes may not expose that folder until the first
+    // deletion, and its global notes collection still includes deleted notes.
+    func execute(_ source: String) throws -> (Int32, Data) {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-l", "JavaScript", "-e", source, id]
+        let output = Pipe(); process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        return (process.terminationStatus, data)
+    }
+    let preflight = """
     function run(a){
       const app=Application('Notes'), id=a[0], n=app.notes.byId(id);
       if(!n.exists()||n.id()!==id)throw Error('note not found');
       if(n.passwordProtected())throw Error('protected note');
-      const before=app.folders.whose({name:{_equals:'Recently Deleted'}})();
-      if(before.length!==1)throw Error('Recently Deleted folder missing or ambiguous');
-      app.delete(n);
-      delay(0.5);
-      const active=app.notes.byId(id);
-      const deleted=before[0].notes.whose({id:{_equals:id}})();
-      if(active.exists()||deleted.length!==1||deleted[0].id()!==id)throw Error('note move not verified');
-      return JSON.stringify({id:id,deleted:true});
+      if(n.container().name()==='Recently Deleted')throw Error('note already in Recently Deleted');
+      return id;
     }
     """
-    let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = ["-l", "JavaScript", "-e", source, id]
-    let output = Pipe(); process.standardOutput = output
-    try process.run()
+    let checked = try execute(preflight)
+    guard checked.0 == 0,
+          String(data: checked.1, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == id else {
+        try fail("cannot validate exact active note")
+    }
+    let mutation = """
+    function run(a){
+      const app=Application('Notes'), id=a[0], n=app.notes.byId(id);
+      if(!n.exists()||n.id()!==id)throw Error('note not found');
+      if(n.passwordProtected())throw Error('protected note');
+      if(n.container().name()==='Recently Deleted')throw Error('note already in Recently Deleted');
+      app.delete(n);
+      for(let attempt=0;attempt<20;attempt++){
+        delay(0.25);
+        const current=app.notes.byId(id);
+        if(current.exists()&&current.id()===id&&current.container().name()==='Recently Deleted'){
+          return JSON.stringify({id:id,deleted:true});
+        }
+        const folders=app.folders.whose({name:{_equals:'Recently Deleted'}})();
+        const matches=[];
+        for(const folder of folders){
+          for(const candidate of folder.notes.whose({id:{_equals:id}})()){
+            if(candidate.id()===id)matches.push(candidate);
+          }
+        }
+        if(matches.length===1)return JSON.stringify({id:id,deleted:true});
+        if(matches.length>1)throw Error('deleted note identity ambiguous');
+      }
+      throw Error('note move not verified');
+    }
+    """
     wrote = true
-    let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-    guard process.terminationStatus == 0,
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    let moved = try execute(mutation)
+    guard moved.0 == 0,
+          let object = try? JSONSerialization.jsonObject(with: moved.1) as? [String: Any],
           object["id"] as? String == id, object["deleted"] as? Bool == true else { try fail("cannot verify exact note in Recently Deleted") }
     return object
 }
