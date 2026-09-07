@@ -18,9 +18,9 @@ jobs:
           - os: ubuntu-latest
             go: "1.23.x"
           - os: ubuntu-latest
-            go: "1.26.5"
+            go: "1.26.6"
           - os: macos-latest
-            go: "1.26.5"
+            go: "1.26.6"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -48,8 +48,8 @@ jobs:
         if: runner.os == 'macOS'
         run: ./scripts/build-native-helper "$RUNNER_TEMP/notes-native-helper"
       - name: Install pinned govulncheck
-        if: matrix.go == '1.26.5' && runner.os == 'Linux'
+        if: matrix.go == '1.26.6' && runner.os == 'Linux'
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: Vulnerability scan
-        if: matrix.go == '1.26.5' && runner.os == 'Linux'
+        if: matrix.go == '1.26.6' && runner.os == 'Linux'
         run: govulncheck ./...
