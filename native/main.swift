@@ -336,6 +336,9 @@ func run(_ request: Request) throws -> [String: Any] {
     if request.operation == "move_to_recently_deleted" { return try moveToRecentlyDeleted(request.id) }
     let expected = try show(request.id)
     Thread.sleep(forTimeInterval: 0.25)
+    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow" {
+        try fail("Notes editor unavailable while the Mac is locked")
+    }
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
     let root = AXUIElementCreateApplication(app.processIdentifier)
     guard AXUIElementSetMessagingTimeout(root, 2) == .success else { try fail("cannot bound Notes accessibility calls") }
