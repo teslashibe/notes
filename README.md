@@ -124,6 +124,10 @@ host application remains responsible for authentication, authorization,
 turn-binding, idempotent effect claims, participant configuration, and
 deletion confirmation.
 
+The catalog includes separate `create_note` (private, no invitations) and
+`create_shared_note` contracts. Hosts must expose and authorize the creation mode
+appropriate to the current source; catalog membership is not an access grant.
+
 ## Development
 
 Run deterministic checks without live Notes access:

@@ -9,9 +9,25 @@ import (
 	"github.com/teslashibe/notes"
 )
 
+func TestPrivateCreationHasNoRecipientAuthority(t *testing.T) {
+	args, err := Decode("create_note", []byte(`{"operation_id":"private","title":"Fixture","body":"First paragraph.\nSecond paragraph.","items":[]}`))
+	if err != nil || args.NoteID != "" || args.Title != "Fixture" {
+		t.Fatal(args, err)
+	}
+	for _, raw := range []string{
+		`{"operation_id":"private","title":"Fixture","body":"","items":[],"participants":["someone"]}`,
+		`{"operation_id":"private","title":"Fixture","body":"","items":[],"sender":"owner"}`,
+		`{"operation_id":"private","title":"Fixture","body":""}`,
+	} {
+		if _, err := Decode("create_note", []byte(raw)); err == nil {
+			t.Fatal("accepted invalid private creation")
+		}
+	}
+}
+
 func TestCatalogIsolationAndDecode(t *testing.T) {
 	tools := Tools()
-	if len(tools) != 10 {
+	if len(tools) != 11 {
 		t.Fatal(len(tools))
 	}
 	tools[0]["inputSchema"].(map[string]any)["properties"].(map[string]any)["operation_id"].(map[string]any)["type"] = "number"
