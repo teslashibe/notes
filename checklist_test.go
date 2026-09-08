@@ -118,6 +118,21 @@ func TestNativeValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeChecklistReportsLockedDesktopBeforeEditing(t *testing.T) {
+	source, err := os.ReadFile("native/main.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	locked := strings.Index(text, `bundleIdentifier == "com.apple.loginwindow"`)
+	editor := strings.Index(text, `let editors = all.filter`)
+	if locked < 0 || editor < 0 || locked > editor ||
+		!strings.Contains(text, `try fail("Notes editor unavailable while the Mac is locked")`) {
+		t.Fatal("native helper does not classify a locked desktop before editor selection")
+	}
+}
+
 func TestNativeUncertainty(t *testing.T) {
 	for _, tc := range []struct {
 		mode      string
