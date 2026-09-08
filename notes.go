@@ -1,5 +1,5 @@
 // Package notes accesses Apple Notes through macOS automation and a native helper.
-// It never accesses private databases or replaces an existing note's entire body.
+// It never accesses private databases or assigns an existing note's HTML body.
 package notes
 
 import (
