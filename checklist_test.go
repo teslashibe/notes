@@ -132,9 +132,10 @@ func TestNativeChecklistReportsLockedDesktopBeforeEditing(t *testing.T) {
 		!strings.Contains(text, `try fail("Notes editor unavailable while the Mac is locked")`) {
 		t.Fatal("native helper does not classify a locked desktop before activating Notes")
 	}
-	if !strings.Contains(text, `let deadline = Date().addingTimeInterval(3)`) ||
-		!strings.Contains(text, `if matched.count > 1 || Date() >= deadline { try fail("ambiguous note editor") }`) {
-		t.Fatal("native helper does not bound cold editor discovery")
+	if !strings.Contains(text, `for attempt in 0..<15`) ||
+		!strings.Contains(text, `if matched.count > 1 || attempt == 14 { try fail("ambiguous note editor") }`) ||
+		strings.Count(text, `try requireUnlockedDesktop()`) < 8 {
+		t.Fatal("native helper does not bound cold editor discovery or recheck locks before mutation")
 	}
 }
 

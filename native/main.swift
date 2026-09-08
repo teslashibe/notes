@@ -7,6 +7,11 @@ struct Item: Codable, Equatable { let text: String; let checked: Bool; let locat
 struct Failure: Error { let message: String }
 var wrote = false
 func fail(_ message: String) throws -> Never { throw Failure(message: message) }
+func requireUnlockedDesktop() throws {
+    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow" {
+        try fail("Notes editor unavailable while the Mac is locked")
+    }
+}
 func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
     var value: CFTypeRef?
     AXUIElementCopyAttributeValue(e, key as CFString, &value)
@@ -17,6 +22,7 @@ func elements(_ e: AXUIElement, _ depth: Int = 0) -> [AXUIElement] {
     return [e] + (attr(e, "AXChildren") as? [AXUIElement] ?? []).prefix(200).flatMap { elements($0, depth + 1) }
 }
 func set(_ e: AXUIElement, _ key: String, _ value: CFTypeRef) throws {
+    try requireUnlockedDesktop()
     guard AXUIElementSetAttributeValue(e, key as CFString, value) == .success else { try fail("accessibility selection failed") }
 }
 func select(_ e: AXUIElement, _ location: Int, _ length: Int = 0) throws {
@@ -25,6 +31,7 @@ func select(_ e: AXUIElement, _ location: Int, _ length: Int = 0) throws {
     try set(e, kAXSelectedTextRangeAttribute, AXValueCreate(.cfRange, &range)!)
 }
 func key(_ app: NSRunningApplication, _ code: CGKeyCode, _ flags: CGEventFlags) throws {
+    try requireUnlockedDesktop()
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { try fail("Notes lost foreground; keyboard automation stopped") }
     for down in [true, false] {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
@@ -136,6 +143,7 @@ func unique(_ root: AXUIElement, _ predicate: (AXUIElement) -> Bool) throws -> A
     return matches[0]
 }
 func click(_ e: AXUIElement, named operation: String = "control") throws {
+    try requireUnlockedDesktop()
     guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
     // Never use global coordinate clicks: a share picker or focus change can
     // redirect them to an unrelated target. Labels in SwiftUI often resolve to
@@ -165,6 +173,7 @@ func click(_ e: AXUIElement, named operation: String = "control") throws {
     try fail(sawEnabledAction ? "\(operation) accessibility action failed" : "\(operation) and ancestors support neither safe press nor menu")
 }
 func clickVisible(_ e: AXUIElement, named operation: String) throws {
+    try requireUnlockedDesktop()
     if let positionRef = attr(e, kAXPositionAttribute),
        let sizeRef = attr(e, kAXSizeAttribute) {
         let position = positionRef as! AXValue
@@ -334,28 +343,29 @@ func run(_ request: Request) throws -> [String: Any] {
     defer { close(lock) }
     guard AXIsProcessTrusted() else { try fail("Accessibility permission required") }
     if request.operation == "move_to_recently_deleted" { return try moveToRecentlyDeleted(request.id) }
-    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow" {
-        try fail("Notes editor unavailable while the Mac is locked")
-    }
+    try requireUnlockedDesktop()
     let expected = try show(request.id)
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
     let root = AXUIElementCreateApplication(app.processIdentifier)
     guard AXUIElementSetMessagingTimeout(root, 2) == .success else { try fail("cannot bound Notes accessibility calls") }
-    let deadline = Date().addingTimeInterval(3)
     var matched: [AXUIElement] = []
-    repeat {
+    for attempt in 0..<15 {
+        try requireUnlockedDesktop()
         let all = elements(root)
         guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
         let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
         matched = try editors.filter { try content($0).0.trimmingCharacters(in: .newlines) == expected }
         if matched.count == 1 { break }
-        if matched.count > 1 || Date() >= deadline { try fail("ambiguous note editor") }
+        if matched.count > 1 || attempt == 14 { try fail("ambiguous note editor") }
         Thread.sleep(forTimeInterval: 0.2)
-    } while true
+    }
     let editor = matched[0]
     let before = try content(editor)
     guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
-    if request.operation == "share" || request.operation == "participants" || request.operation == "shared_link" { return try sharing(request, root, app) }
+    if request.operation == "share" || request.operation == "participants" || request.operation == "shared_link" {
+        try requireUnlockedDesktop()
+        return try sharing(request, root, app)
+    }
     if request.operation == "edit_checklist_item" {
         guard let old = request.text, !old.isEmpty, let replacement = request.replacement, !replacement.isEmpty else { try fail("exact checklist replacement required") }
         let matches = before.1.filter { $0.text == old }
@@ -365,8 +375,10 @@ func run(_ request: Request) throws -> [String: Any] {
         let source = before.0 as NSString
         let newlineLength = target.length - (target.text as NSString).length
         guard newlineLength >= 0 else { try fail("invalid checklist item range") }
+        try requireUnlockedDesktop()
         try select(editor, target.location, target.length - newlineLength)
         guard try content(editor).0 == before.0 else { try fail("note changed before edit") }
+        try requireUnlockedDesktop()
         wrote = true
         try set(editor, kAXSelectedTextAttribute, replacement as CFString)
         let after = try content(editor)
@@ -380,9 +392,11 @@ func run(_ request: Request) throws -> [String: Any] {
         let matches = before.1.filter { $0.text == request.text }
         guard matches.count == 1, let checked = request.checked else { try fail("item missing or ambiguous") }
         if matches[0].checked != checked {
+            try requireUnlockedDesktop()
             try select(editor, matches[0].location)
             let current = try content(editor)
             guard current.0 == before.0 && current.1 == before.1 else { try fail("note changed before mutation") }
+            try requireUnlockedDesktop()
             wrote = true
             try key(app, 32, [.maskCommand, .maskShift])
             let after = try content(editor)
@@ -396,12 +410,16 @@ func run(_ request: Request) throws -> [String: Any] {
         guard let text = request.text, !text.isEmpty, !text.contains(where: { $0.isNewline }), !before.1.contains(where: { $0.text == text }) else { try fail("empty, multiline, or duplicate item") }
         let prefix = before.0.hasSuffix("\n") ? "" : "\n"
         let location = (before.0 as NSString).length + (prefix as NSString).length
+        try requireUnlockedDesktop()
         try select(editor, (before.0 as NSString).length)
         guard try content(editor).0 == before.0 else { try fail("note changed before append") }
+        try requireUnlockedDesktop()
         wrote = true
         try set(editor, kAXSelectedTextAttribute, (prefix + text + "\n") as CFString)
+        try requireUnlockedDesktop()
         try select(editor, location)
         if !(try content(editor).1.contains(where: { $0.location == location })) {
+            try requireUnlockedDesktop()
             try key(app, 37, [.maskCommand, .maskShift])
         }
         let after = try content(editor)
