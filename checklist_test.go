@@ -134,6 +134,7 @@ func TestNativeChecklistReportsLockedDesktopBeforeEditing(t *testing.T) {
 	}
 	if !strings.Contains(text, `for attempt in 0..<15`) ||
 		!strings.Contains(text, `if matched.count > 1 || attempt == 14 { try fail("ambiguous note editor") }`) ||
+		!strings.Contains(text, `guard let current = try? content($0).0 else`) ||
 		strings.Count(text, `try requireUnlockedDesktop()`) < 8 {
 		t.Fatal("native helper does not bound cold editor discovery or recheck locks before mutation")
 	}

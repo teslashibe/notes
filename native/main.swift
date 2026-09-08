@@ -354,8 +354,15 @@ func run(_ request: Request) throws -> [String: Any] {
         let all = elements(root)
         guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
         let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
-        matched = try editors.filter { try content($0).0.trimmingCharacters(in: .newlines) == expected }
-        if matched.count == 1 { break }
+        var unreadable = false
+        matched = editors.filter {
+            guard let current = try? content($0).0 else {
+                unreadable = true
+                return false
+            }
+            return current.trimmingCharacters(in: .newlines) == expected
+        }
+        if matched.count == 1 && !unreadable { break }
         if matched.count > 1 || attempt == 14 { try fail("ambiguous note editor") }
         Thread.sleep(forTimeInterval: 0.2)
     }
