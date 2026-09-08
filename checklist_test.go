@@ -16,7 +16,15 @@ func nativeTestProcess() {
 	if json.NewDecoder(os.Stdin).Decode(&req) != nil {
 		os.Exit(90)
 	}
+	if path := os.Getenv("NOTES_NATIVE_CAPTURE"); path != "" {
+		data, _ := json.Marshal(req)
+		if os.WriteFile(path, data, 0600) != nil {
+			os.Exit(91)
+		}
+	}
 	switch os.Getenv("NOTES_NATIVE_MODE") {
+	case "unverified":
+		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Items: []ChecklistItem{}})
 	case "invalid":
 		fmt.Print("not json")
 	case "uncertain":
@@ -39,6 +47,38 @@ func nativeTestProcess() {
 		_ = json.NewEncoder(os.Stdout).Encode(nativeResponse{ID: req.ID, Items: []ChecklistItem{{Text: text, Checked: req.Checked != nil && *req.Checked}}, Verified: true, Participants: req.Participants, Deleted: req.Operation == "move_to_recently_deleted"})
 	}
 	os.Exit(0)
+}
+
+func TestNativeTextEditContract(t *testing.T) {
+	c := nativeHelper(t, "")
+	path := t.TempDir() + "/request.json"
+	t.Setenv("NOTES_NATIVE_CAPTURE", path)
+	for _, replacement := range []string{"", "new\ntext ' \\"} {
+		if err := c.EditText(context.Background(), "exact-note", "old\ntext 🐕", replacement); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var request nativeRequest
+		if err := json.Unmarshal(data, &request); err != nil || request.ID != "exact-note" || request.Text != "old\ntext 🐕" || request.Replacement != replacement {
+			t.Fatal(request, err)
+		}
+	}
+	for _, bad := range []string{"\x00", "\uFFFC", strings.Repeat("x", 65537)} {
+		if !errors.Is(c.EditText(context.Background(), "exact-note", "old", bad), ErrInvalidInput) {
+			t.Fatal("invalid replacement accepted")
+		}
+	}
+	for _, mode := range []string{"unverified", "uncertain", "wrong"} {
+		t.Setenv("NOTES_NATIVE_MODE", mode)
+		err := c.EditText(context.Background(), "exact-note", "old", "new")
+		var op *OperationError
+		if !errors.As(err, &op) || !op.Uncertain {
+			t.Fatal(mode, err)
+		}
+	}
 }
 func nativeHelper(t *testing.T, mode string) Client {
 	t.Helper()

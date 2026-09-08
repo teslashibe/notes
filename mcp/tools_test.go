@@ -11,7 +11,7 @@ import (
 
 func TestCatalogIsolationAndDecode(t *testing.T) {
 	tools := Tools()
-	if len(tools) != 9 {
+	if len(tools) != 10 {
 		t.Fatal(len(tools))
 	}
 	tools[0]["inputSchema"].(map[string]any)["properties"].(map[string]any)["operation_id"].(map[string]any)["type"] = "number"
@@ -41,6 +41,26 @@ func TestCatalogIsolationAndDecode(t *testing.T) {
 	for _, raw := range []string{`{"operation_id":"op","note_id":"id","items":[]}`, `{"operation_id":"op","note_id":"id","items":["x\ny"]}`, `{"operation_id":"op","note_id":null,"items":["x"]}`} {
 		if _, err := Decode("add_note_items", json.RawMessage(raw)); err == nil {
 			t.Fatal(raw)
+		}
+	}
+}
+
+func TestTextEditContract(t *testing.T) {
+	for _, replacement := range []string{"", "new\nparagraph 🐕"} {
+		raw, _ := json.Marshal(map[string]string{"operation_id": "edit", "note_id": "exact", "old_text": "old\nparagraph", "new_text": replacement})
+		args, err := Decode("edit_note_text", raw)
+		if err != nil || args.OldText != "old\nparagraph" || args.NewText != replacement {
+			t.Fatal(args, err)
+		}
+	}
+	for _, raw := range []string{
+		`{"operation_id":"edit","note_id":"exact","old_text":"","new_text":"new"}`,
+		`{"operation_id":"edit","note_id":"exact","old_text":"old","new_text":null}`,
+		`{"operation_id":"edit","note_id":"exact","old_text":"old","new_text":"\ufffc"}`,
+		`{"operation_id":"edit","note_id":"exact","old_text":"old"}`,
+	} {
+		if _, err := Decode("edit_note_text", json.RawMessage(raw)); err == nil {
+			t.Fatal("accepted invalid text edit", raw)
 		}
 	}
 }

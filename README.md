@@ -109,6 +109,11 @@ state or an operational guarantee.
 - `Create` creates a new note from a single-line title and escaped plain text;
   it never replaces an existing note body.
 - There is no general append-body operation.
+- `EditText` replaces one exact, unique plain-text range, including multiline
+  text. An empty replacement removes that range. Ambiguous text, attachment
+  markers, and checklist paragraphs are rejected before writing; use
+  `EditChecklistItem` for checklist text. The native helper verifies the resulting
+  text and preserves checklist contents and checked state.
 - Native mutations require exact IDs and preserve uncertain outcomes. Never
   blindly retry an `OperationError` whose `Uncertain` field is true.
 - Calls default to 20 seconds and are capped at one minute. JXA request JSON is
@@ -134,6 +139,13 @@ Tests use fake subprocesses and clients. On macOS, a JXA contract test runs the
 JavaScript interpreter against an in-memory replacement for Notes. It does not
 open or write Notes. `TestLiveReadOnly` accesses real Notes only when explicitly
 enabled with `NOTES_LIVE_READONLY=1`; never enable it in routine validation.
+
+`TestNativeNoteTextLifecycle` is a separate, write-enabled fixture. Run it only
+in the intended macOS GUI account with the established signed test runner and
+`NOTES_LIVE_FIXTURE_HELPER` set to the reviewed, signed native helper. It creates
+one private note, verifies text and checklist edits and safe rejections, then
+moves only that fixture to Recently Deleted. It does not test collaboration or
+send messages. Leave this variable unset for deterministic checks.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SUPPORT.md](SUPPORT.md), and
 [SECURITY.md](SECURITY.md).

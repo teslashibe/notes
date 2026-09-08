@@ -1,5 +1,5 @@
-// Package notes reads and creates Apple Notes using macOS JavaScript for Automation.
-// It never accesses private databases or rewrites an existing note's body.
+// Package notes accesses Apple Notes through macOS automation and a native helper.
+// It never accesses private databases or assigns an existing note's HTML body.
 package notes
 
 import (
@@ -32,6 +32,7 @@ type Capabilities struct {
 	Append          bool
 	NativeChecklist bool
 	Sharing         bool
+	EditText        bool
 }
 
 // Client's zero value uses Notes' default account and its default folder for
@@ -85,7 +86,7 @@ func (e *OperationError) Error() string {
 func (e *OperationError) Unwrap() error { return e.Err }
 
 func (c Client) Capabilities() Capabilities {
-	return Capabilities{Read: true, Create: true, NativeChecklist: c.NativeExecutable != "", Sharing: c.NativeExecutable != ""}
+	return Capabilities{Read: true, Create: true, NativeChecklist: c.NativeExecutable != "", Sharing: c.NativeExecutable != "", EditText: c.NativeExecutable != ""}
 }
 
 // List returns metadata for all accessible notes, without fetching their bodies.

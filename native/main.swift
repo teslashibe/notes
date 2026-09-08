@@ -337,7 +337,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
     return result
 }
 func run(_ request: Request) throws -> [String: Any] {
-    guard ["checklist", "edit_checklist_item", "add_checklist_item", "set_checked", "share", "participants", "shared_link", "move_to_recently_deleted"].contains(request.operation) else { try fail("unsupported operation") }
+    guard ["checklist", "edit_text", "edit_checklist_item", "add_checklist_item", "set_checked", "share", "participants", "shared_link", "move_to_recently_deleted"].contains(request.operation) else { try fail("unsupported operation") }
     let lock = open((NSHomeDirectory() + "/Library/Caches/teslashibe-notes.lock"), O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { try fail("Notes automation busy") }
     defer { close(lock) }
@@ -373,7 +373,30 @@ func run(_ request: Request) throws -> [String: Any] {
         try requireUnlockedDesktop()
         return try sharing(request, root, app)
     }
-    if request.operation == "edit_checklist_item" {
+    if request.operation == "edit_text" {
+        guard let text = request.text, !text.isEmpty,
+              !text.contains("\u{fffc}"), !(request.replacement ?? "").contains("\u{fffc}") else { try fail("invalid text range") }
+        let replacement = request.replacement ?? ""
+        let original = before.0 as NSString
+        let target = original.range(of: text, options: .literal)
+        guard target.location != NSNotFound else { try fail("text missing or ambiguous") }
+        // Search from the next UTF-16 position to reject overlapping duplicates too.
+        let remainder = NSRange(location: target.location + 1, length: original.length - target.location - 1)
+        guard original.range(of: text, options: .literal, range: remainder).location == NSNotFound else { try fail("text missing or ambiguous") }
+        guard !before.1.contains(where: { NSIntersectionRange(target, NSRange(location: $0.location, length: $0.length)).length > 0 }) else { try fail("use checklist editing for checklist text") }
+        if text != replacement {
+            try requireUnlockedDesktop()
+            try select(editor, target.location, target.length)
+            let current = try content(editor)
+            guard current.0 == before.0 && current.1 == before.1 else { try fail("note changed before text edit") }
+            wrote = true
+            try set(editor, kAXSelectedTextAttribute, replacement as CFString)
+            let after = try content(editor)
+            guard after.0 == original.replacingCharacters(in: target, with: replacement),
+                  after.1.count == before.1.count,
+                  zip(after.1, before.1).allSatisfy({ current, previous in current.text == previous.text && current.checked == previous.checked }) else { try fail("text edit or preserved checklist not verified") }
+        }
+    } else if request.operation == "edit_checklist_item" {
         guard let old = request.text, !old.isEmpty, let replacement = request.replacement, !replacement.isEmpty else { try fail("exact checklist replacement required") }
         let matches = before.1.filter { $0.text == old }
         guard matches.count == 1 else { try fail("checklist item missing or ambiguous") }
@@ -434,7 +457,7 @@ func run(_ request: Request) throws -> [String: Any] {
     }
     let result = try content(editor)
     let data = try JSONEncoder().encode(result.1)
-    return ["id": request.id, "items": try JSONSerialization.jsonObject(with: data)]
+    return ["id": request.id, "items": try JSONSerialization.jsonObject(with: data), "verified": true]
 }
 do {
     let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
