@@ -61,6 +61,18 @@ func (c Client) EditChecklistItem(ctx context.Context, id, text, replacement str
 	return c.native(ctx, nativeRequest{Operation: "edit_checklist_item", ID: id, Text: text, Replacement: replacement})
 }
 
+// EditText replaces one exact, unique text range in the native note editor.
+// It accepts multiline text and an empty replacement, but rejects attachments
+// and checklist ranges; use EditChecklistItem for checked-state preservation.
+// The helper verifies the complete resulting text and unchanged checklist items.
+func (c Client) EditText(ctx context.Context, id, text, replacement string) error {
+	result, err := c.nativeCall(ctx, nativeRequest{Operation: "edit_text", ID: id, Text: text, Replacement: replacement})
+	if err == nil && !result.Verified {
+		return &OperationError{Operation: "edit_text", Uncertain: true, Err: errors.New("native helper did not verify edited text")}
+	}
+	return err
+}
+
 // MoveToRecentlyDeleted moves the exact note to Notes' recoverable Recently
 // Deleted folder and verifies that it is no longer active. It never permanently deletes.
 func (c Client) MoveToRecentlyDeleted(ctx context.Context, id string) error {
@@ -105,6 +117,12 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 	}
 	sharing := req.Operation == "share" || req.Operation == "participants" || req.Operation == "shared_link"
 	deleting := req.Operation == "move_to_recently_deleted"
+	editingText := req.Operation == "edit_text"
+	if editingText && (req.Text == "" || !validText(req.Text) || !validText(req.Replacement) ||
+		len(req.Text) > 64<<10 || len(req.Replacement) > 64<<10 ||
+		strings.ContainsRune(req.Text, '\uFFFC') || strings.ContainsRune(req.Replacement, '\uFFFC')) {
+		return fail(ErrInvalidInput, false)
+	}
 	if sharing {
 		if len(req.Participants) != 2 || req.Participants[0] == req.Participants[1] {
 			return fail(ErrInvalidInput, false)
@@ -115,7 +133,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 			}
 		}
 	}
-	if !sharing && !deleting && req.Operation != "checklist" && (strings.TrimSpace(req.Text) == "" || !validText(req.Text) || strings.ContainsAny(req.Text, "\r\n\u2028\u2029") || len(req.Text) > 4096) {
+	if !sharing && !deleting && !editingText && req.Operation != "checklist" && (strings.TrimSpace(req.Text) == "" || !validText(req.Text) || strings.ContainsAny(req.Text, "\r\n\u2028\u2029") || len(req.Text) > 4096) {
 		return fail(ErrInvalidInput, false)
 	}
 	if req.Operation == "edit_checklist_item" && (strings.TrimSpace(req.Replacement) == "" || !validText(req.Replacement) || strings.ContainsAny(req.Replacement, "\r\n\u2028\u2029") || len(req.Replacement) > 4096) {

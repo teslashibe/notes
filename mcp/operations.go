@@ -24,6 +24,7 @@ type Outcome struct {
 	Notes              []Outcome             `json:"notes,omitempty"`
 	Complete           *bool                 `json:"complete,omitempty"`
 	Body               *string               `json:"body,omitempty"`
+	Plaintext          *string               `json:"plaintext,omitempty"`
 	BodyAvailable      *bool                 `json:"body_available,omitempty"`
 	ChecklistAvailable *bool                 `json:"checklist_available,omitempty"`
 	Checklist          []notes.ChecklistItem `json:"checklist,omitempty"`
@@ -73,6 +74,7 @@ func Read(ctx context.Context, client Reader, out Outcome) Outcome {
 		out = Metadata(n)
 		out.Status = "completed"
 		out.Body = &n.Body
+		out.Plaintext = &n.Plaintext
 	}
 	out.BodyAvailable = &bodyOK
 	if !bodyOK {
