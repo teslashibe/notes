@@ -32,15 +32,16 @@ func Tools() []map[string]any {
 		"check_note_item":     "Mark one uniquely matching checklist item complete. Use its exact current text. An already-complete item is an unchanged result; a missing or ambiguous item is not changed.",
 		"uncheck_note_item":   "Reopen one uniquely matching checklist item. Use its exact current text. An already-open item is an unchanged result; a missing or ambiguous item is not changed.",
 		"create_shared_note":  "Create a note and share it only with the configured participants. Supply checklist items separately from the body. Preserve the returned note ID if creation succeeds but sharing or item additions fail; do not create another note to retry.",
+		"create_note":         "Create a private note without sharing or inviting anyone. Supply checklist items separately from the body. Preserve the returned note ID if creation succeeds but item additions fail; do not create another note to retry.",
 		"delete_note":         "Request confirmation to move this entire note to Recently Deleted. This call does not delete the note or individual checklist items. Present the returned confirmation question to the user.",
 		"confirm_delete_note": "Move the previously requested note to Recently Deleted only after the same requester explicitly confirms in a later message. If the current message is negative, unrelated, or ambiguous, do not call this tool. The harness rejects expired confirmations and changed or mismatched targets.",
 	}
 	var tools []map[string]any
-	for _, name := range []string{"list_notes", "read_note", "add_note_items", "edit_note_item", "edit_note_text", "check_note_item", "uncheck_note_item", "delete_note", "confirm_delete_note", "create_shared_note"} {
+	for _, name := range []string{"list_notes", "read_note", "add_note_items", "edit_note_item", "edit_note_text", "check_note_item", "uncheck_note_item", "delete_note", "confirm_delete_note", "create_shared_note", "create_note"} {
 		properties := map[string]any{"operation_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Stable ID for this operation. Reuse only when retrying identical arguments."}}
 		required := []string{"operation_id"}
 		fields := []string{}
-		if name != "list_notes" && name != "create_shared_note" {
+		if name != "list_notes" && name != "create_shared_note" && name != "create_note" {
 			fields = append(fields, "note_id")
 		}
 		switch name {
@@ -50,7 +51,7 @@ func Tools() []map[string]any {
 			fields = append(fields, "old_text", "new_text")
 		case "check_note_item", "uncheck_note_item":
 			fields = append(fields, "text")
-		case "create_shared_note":
+		case "create_shared_note", "create_note":
 			fields = append(fields, "title", "body", "items")
 		}
 		for _, field := range fields {
@@ -66,7 +67,7 @@ func Tools() []map[string]any {
 			}
 			switch field {
 			case "note_id":
-				p["description"] = "Exact note ID returned by list_notes, read_note, or create_shared_note. Never substitute a title."
+				p["description"] = "Exact note ID returned by list_notes, read_note, create_note, or create_shared_note. Never substitute a title."
 			case "items":
 				p = map[string]any{"type": "array", "minItems": 0, "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\r\\n\\u2028\\u2029\\u0000]+$"}}
 				if name == "add_note_items" {
