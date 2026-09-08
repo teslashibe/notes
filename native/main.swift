@@ -334,19 +334,24 @@ func run(_ request: Request) throws -> [String: Any] {
     defer { close(lock) }
     guard AXIsProcessTrusted() else { try fail("Accessibility permission required") }
     if request.operation == "move_to_recently_deleted" { return try moveToRecentlyDeleted(request.id) }
-    let expected = try show(request.id)
-    Thread.sleep(forTimeInterval: 0.25)
     if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow" {
         try fail("Notes editor unavailable while the Mac is locked")
     }
+    let expected = try show(request.id)
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").first else { try fail("Notes not running") }
     let root = AXUIElementCreateApplication(app.processIdentifier)
     guard AXUIElementSetMessagingTimeout(root, 2) == .success else { try fail("cannot bound Notes accessibility calls") }
-    let all = elements(root)
-    guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
-    let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
-    let matched = try editors.filter { try content($0).0.trimmingCharacters(in: .newlines) == expected }
-    guard matched.count == 1 else { try fail("ambiguous note editor") }
+    let deadline = Date().addingTimeInterval(3)
+    var matched: [AXUIElement] = []
+    repeat {
+        let all = elements(root)
+        guard !all.contains(where: { attr($0, kAXRoleAttribute) as? String == "AXSheet" }) else { try fail("Notes has a modal dialog; finish it manually") }
+        let editors = all.filter { attr($0, "AXIdentifier") as? String == "Note Body Text View" }
+        matched = try editors.filter { try content($0).0.trimmingCharacters(in: .newlines) == expected }
+        if matched.count == 1 { break }
+        if matched.count > 1 || Date() >= deadline { try fail("ambiguous note editor") }
+        Thread.sleep(forTimeInterval: 0.2)
+    } while true
     let editor = matched[0]
     let before = try content(editor)
     guard before.0.trimmingCharacters(in: .newlines) == expected else { try fail("note editor identity or content changed") }
