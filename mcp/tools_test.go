@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/teslashibe/notes"
@@ -27,7 +28,7 @@ func TestPrivateCreationHasNoRecipientAuthority(t *testing.T) {
 
 func TestCatalogIsolationAndDecode(t *testing.T) {
 	tools := Tools()
-	if len(tools) != 11 {
+	if len(tools) != 13 {
 		t.Fatal(len(tools))
 	}
 	tools[0]["inputSchema"].(map[string]any)["properties"].(map[string]any)["operation_id"].(map[string]any)["type"] = "number"
@@ -38,7 +39,7 @@ func TestCatalogIsolationAndDecode(t *testing.T) {
 		name := tool["name"].(string)
 		args := map[string]any{"operation_id": "op"}
 		for _, key := range tool["inputSchema"].(map[string]any)["required"].([]string) {
-			if key == "items" {
+			if key == "items" || key == "note_ids" {
 				args[key] = []string{"milk"}
 			} else {
 				args[key] = "value"
@@ -152,5 +153,33 @@ func TestPartialReadsAndUncertainty(t *testing.T) {
 	var decoded Outcome
 	if err := json.Unmarshal([]byte(out.Encoded()), &decoded); err != nil || decoded.Status != out.Status || decoded.NoteID != out.NoteID || !decoded.ReplayUnsafe {
 		t.Fatal("outcome roundtrip")
+	}
+}
+
+func TestBatchDeletionContract(t *testing.T) {
+	for _, name := range []string{"delete_notes", "confirm_delete_notes"} {
+		args, err := Decode(name, []byte(`{"operation_id":"batch","note_ids":["b","a"]}`))
+		if err != nil || len(args.NoteIDs) != 2 || args.NoteIDs[0] != "a" {
+			t.Fatal(args, err)
+		}
+		for _, raw := range []string{
+			`{"operation_id":"batch","note_ids":[]}`, `{"operation_id":"batch","note_ids":null}`,
+			`{"operation_id":"batch","note_ids":["a","a"]}`, `{"operation_id":"batch","note_ids":[""]}`,
+			`{"operation_id":"batch","note_ids":["a\nb"]}`, `{"operation_id":"batch","note_ids":[null]}`,
+			`{"operation_id":"batch","note_ids":["a"],"note_id":"other"}`,
+			`{"operation_id":"batch","note_ids":["a"],"sender":"forged"}`,
+		} {
+			if _, err := Decode(name, []byte(raw)); err == nil {
+				t.Fatal("accepted invalid deletion", name, raw)
+			}
+		}
+		ids := make([]string, MaxDeleteNotes+1)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("note-%d", i)
+		}
+		raw, _ := json.Marshal(map[string]any{"operation_id": "batch", "note_ids": ids})
+		if _, err := Decode(name, raw); err == nil {
+			t.Fatal("accepted oversized deletion")
+		}
 	}
 }
