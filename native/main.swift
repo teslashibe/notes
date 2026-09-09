@@ -348,11 +348,11 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
         try click(expand, named: "participant expansion")
         guard (attr(expand, kAXValueAttribute) as? NSNumber)?.boolValue == false else { try fail("participant expansion setting not verified") }
     }
-    try click(unique(panel) { label($0) == "Done" }, named: "Done")
     collaborationVerified = true
     if request.operation == "shared_link" {
-        try clickVisible(unique(root) { attr($0, kAXRoleAttribute) as? String == "AXButton" && label($0) == "Collaborate" }, named: "Collaborate")
-        let copy = try waitFor(root) { label($0) == "Copy Link" }
+        // Copy Link belongs to the already verified Manage Shared Note panel,
+        // not the Collaborate activity popover.
+        let copy = try unique(panel) { label($0) == "Copy Link" }
         let previous = NSPasteboard.general.changeCount
         try click(copy, named: "Copy Link")
         for _ in 0..<40 {
@@ -364,6 +364,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
               let url = URL(string: link), url.scheme == "https", url.host == "www.icloud.com", url.path.hasPrefix("/notes/") else { try fail("fresh iCloud Notes link not available") }
         result["link"] = link
     }
+    try click(unique(panel) { label($0) == "Done" }, named: "Done")
     return result
 }
 func run(_ request: Request) throws -> [String: Any] {
