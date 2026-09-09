@@ -193,7 +193,28 @@ func clickVisible(_ e: AXUIElement, named operation: String) throws {
         let target = CGPoint(x: point.x + dimensions.width / 2, y: point.y + dimensions.height / 2)
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(target.x), Float(target.y), &hit) == .success,
-              let hit, label(hit) == label(e) else { try fail("\(operation) hit target was not verified") }
+              let hit else { try fail("\(operation) hit target was not verified") }
+        // SwiftUI can return an actionable child of the labelled button. Its
+        // ancestry must reach that exact control, never merely the same window.
+        var current: AXUIElement? = hit
+        var verified = false
+        for _ in 0..<5 {
+            guard let candidate = current else { break }
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(candidate, &pid) == .success, pid == owner else { break }
+            if CFEqual(candidate, e) { verified = true; break }
+            guard let parent = attr(candidate, kAXParentAttribute) else { break }
+            current = unsafeBitCast(parent, to: AXUIElement.self)
+        }
+        guard verified else { try fail("\(operation) hit target was not verified") }
+        var actions: CFArray?
+        if AXUIElementCopyActionNames(hit, &actions) == .success,
+           (actions as? [String] ?? []).contains(kAXPressAction as String) {
+            guard (attr(hit, kAXEnabledAttribute) as? NSNumber)?.boolValue != false,
+                  AXUIElementPerformAction(hit, kAXPressAction as CFString) == .success else { try fail("\(operation) accessibility action failed") }
+            Thread.sleep(forTimeInterval: 0.35)
+            return
+        }
         guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left),
               let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left) else { try fail("\(operation) click could not be created") }
         down.post(tap: .cghidEventTap)
