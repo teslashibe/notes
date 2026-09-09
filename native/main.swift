@@ -174,10 +174,14 @@ func click(_ e: AXUIElement, named operation: String = "control") throws {
         guard let parent = attr(candidate, kAXParentAttribute) else { current = nil; continue }
         current = unsafeBitCast(parent, to: AXUIElement.self)
     }
-    try fail(sawEnabledAction ? "\(operation) accessibility action failed" : "\(operation) and ancestors support neither safe press nor menu")
+    if sawEnabledAction { try fail("\(operation) accessibility action failed") }
+    // SwiftUI may expose AXPress only on the hit-tested inner button. Resolve
+    // that exact descendant before giving up; never repeat a failed action.
+    try clickVisible(e, named: operation)
 }
-func clickVisible(_ e: AXUIElement, named operation: String) throws {
+func clickVisible(_ e: AXUIElement, named operation: String, allowCoordinate: Bool = false) throws {
     try requireUnlockedDesktop()
+    guard (attr(e, kAXEnabledAttribute) as? NSNumber)?.boolValue != false else { try fail("\(operation) is disabled") }
     guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
     var owner: pid_t = 0
     guard AXUIElementGetPid(e, &owner) == .success, owner == app.processIdentifier else { try fail("native control does not belong to foreground Notes") }
@@ -215,6 +219,7 @@ func clickVisible(_ e: AXUIElement, named operation: String) throws {
             Thread.sleep(forTimeInterval: 0.35)
             return
         }
+        guard allowCoordinate else { try fail("\(operation) verified control has no press action") }
         guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left),
               let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left) else { try fail("\(operation) click could not be created") }
         down.post(tap: .cghidEventTap)
@@ -294,7 +299,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
             }
             let value = attr(suggestion, kAXValueAttribute) as! String
             tokenNames.append(String(value.dropFirst(phone.count + 2).dropLast()))
-            try clickVisible(suggestion, named: "recipient suggestion")
+            try clickVisible(suggestion, named: "recipient suggestion", allowCoordinate: true)
             try waitUntil {
                 let current = attr(field, kAXValueAttribute) as? String ?? ""
                 return current == String(repeating: "\u{fffc}", count: index + 1) ||
