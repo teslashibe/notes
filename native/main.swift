@@ -152,6 +152,10 @@ func click(_ e: AXUIElement, named operation: String = "control") throws {
     var sawEnabledAction = false
     for _ in 0..<5 {
         guard let candidate = current else { break }
+        let role = attr(candidate, kAXRoleAttribute) as? String ?? ""
+        // A toolbar's menu customizes the toolbar; it never activates its child.
+        // Do not let a missing child action escape into a container operation.
+        if ["AXToolbar", "AXWindow", "AXApplication"].contains(role) { break }
         var owner: pid_t = 0
         guard AXUIElementGetPid(candidate, &owner) == .success, owner == app.processIdentifier else { try fail("native control does not belong to foreground Notes") }
         var actionValues: CFArray?
@@ -174,6 +178,9 @@ func click(_ e: AXUIElement, named operation: String = "control") throws {
 }
 func clickVisible(_ e: AXUIElement, named operation: String) throws {
     try requireUnlockedDesktop()
+    guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == "com.apple.Notes" else { try fail("Notes is not foreground; native UI automation stopped") }
+    var owner: pid_t = 0
+    guard AXUIElementGetPid(e, &owner) == .success, owner == app.processIdentifier else { try fail("native control does not belong to foreground Notes") }
     if let positionRef = attr(e, kAXPositionAttribute),
        let sizeRef = attr(e, kAXSizeAttribute) {
         let position = positionRef as! AXValue
@@ -186,7 +193,28 @@ func clickVisible(_ e: AXUIElement, named operation: String) throws {
         let target = CGPoint(x: point.x + dimensions.width / 2, y: point.y + dimensions.height / 2)
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(target.x), Float(target.y), &hit) == .success,
-              let hit, label(hit) == label(e) else { try fail("\(operation) hit target was not verified") }
+              let hit else { try fail("\(operation) hit target was not verified") }
+        // SwiftUI can return an actionable child of the labelled button. Its
+        // ancestry must reach that exact control, never merely the same window.
+        var current: AXUIElement? = hit
+        var verified = false
+        for _ in 0..<5 {
+            guard let candidate = current else { break }
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(candidate, &pid) == .success, pid == owner else { break }
+            if CFEqual(candidate, e) { verified = true; break }
+            guard let parent = attr(candidate, kAXParentAttribute) else { break }
+            current = unsafeBitCast(parent, to: AXUIElement.self)
+        }
+        guard verified else { try fail("\(operation) hit target was not verified") }
+        var actions: CFArray?
+        if AXUIElementCopyActionNames(hit, &actions) == .success,
+           (actions as? [String] ?? []).contains(kAXPressAction as String) {
+            guard (attr(hit, kAXEnabledAttribute) as? NSNumber)?.boolValue != false,
+                  AXUIElementPerformAction(hit, kAXPressAction as CFString) == .success else { try fail("\(operation) accessibility action failed") }
+            Thread.sleep(forTimeInterval: 0.35)
+            return
+        }
         guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left),
               let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left) else { try fail("\(operation) click could not be created") }
         down.post(tap: .cghidEventTap)
@@ -308,7 +336,9 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
         try waitUntilGone(root) { attr($0, kAXRoleAttribute) as? String == "AXSheet" }
         result["link"] = collaborationLink
     }
-    try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
+    // macOS 26 exposes this button without AXPress. Click only its verified
+    // visible bounds, after exact-note selection, with an exact hit-test.
+    try clickVisible(unique(root) { attr($0, kAXRoleAttribute) as? String == "AXButton" && label($0) == "Collaborate" }, named: "Collaborate")
     try click(waitFor(root) { label($0) == "Manage Shared Note" }, named: "Manage Shared Note")
     let panel = try waitFor(root) { attr($0, "AXIdentifier") as? String == "share settings" }
     let names = elements(panel).filter { attr($0, "AXIdentifier") as? String == "participantName" }.compactMap { attr($0, kAXValueAttribute) as? String }
@@ -321,7 +351,7 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
     try click(unique(panel) { label($0) == "Done" }, named: "Done")
     collaborationVerified = true
     if request.operation == "shared_link" {
-        try click(unique(root) { label($0) == "Collaborate" }, named: "Collaborate")
+        try clickVisible(unique(root) { attr($0, kAXRoleAttribute) as? String == "AXButton" && label($0) == "Collaborate" }, named: "Collaborate")
         let copy = try waitFor(root) { label($0) == "Copy Link" }
         let previous = NSPasteboard.general.changeCount
         try click(copy, named: "Copy Link")
