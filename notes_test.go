@@ -182,6 +182,7 @@ func TestJXAContract(t *testing.T) {
 		{Operation: "list"},
 		{Operation: "get", ID: "two"},
 		{Operation: "get", ID: "absent"},
+		{Operation: "get", ID: "deleted"},
 		{Operation: "get", ID: "locked"},
 		{Operation: "create", Title: "<title> '&", Text: "line 1\n<script>bad() & \" ' \\🙂", FolderID: "folder"},
 		{Operation: "create", Title: "title", Text: "body"},
@@ -204,7 +205,7 @@ func TestJXAContract(t *testing.T) {
 				t.Fatalf("%s: %v", output, err)
 			}
 			switch {
-			case req.ID == "absent":
+			case req.ID == "absent" || req.ID == "deleted":
 				if got.Error == nil || got.Error.Code != "not_found" {
 					t.Fatalf("%s", output)
 				}
@@ -219,6 +220,11 @@ func TestJXAContract(t *testing.T) {
 			case req.Operation == "list":
 				if got.Error != nil || len(got.Notes) != 3 || got.Notes[0].Body != "" {
 					t.Fatalf("%s", output)
+				}
+				for _, note := range got.Notes {
+					if note.ID == "deleted" {
+						t.Fatal("deleted note returned in active list")
+					}
 				}
 			case req.Operation == "get":
 				if got.Note == nil || got.Note.ID != "two" || got.Note.Body != "<div>body two</div>" {
@@ -278,17 +284,18 @@ var Application = function(name) {
     }
     var account = {id:prop("account"), exists:prop(true)};
     var other = {id:prop("other"), exists:prop(true)};
-    var folder = {id:prop("folder"), exists:prop(true), container:prop(account)};
+    var folder = {id:prop("folder"), name:prop("Notes"), exists:prop(true), container:prop(account)};
+    var deletedFolder = {id:prop("deleted-folder"), name:prop("Recently Deleted")};
     account.defaultFolder = prop(folder);
     function note(id, body, locked) {
-        return {id:prop(id), name:prop("same"), exists:prop(true), container:prop(folder),
+        return {id:prop(id), name:prop("same"), exists:prop(true), container:prop(id === "deleted" ? deletedFolder : folder),
             creationDate:prop(new Date("2026-01-01T00:00:00Z")), modificationDate:prop(new Date("2026-01-02T00:00:00Z")),
             shared:prop(false), passwordProtected:prop(!!locked),
-            body:function() { if (locked) throw new Error("read locked body"); return body; }, plaintext:prop("plain " + id)};
+            body:function() { if (locked || id === "deleted") throw new Error("read inaccessible body"); return body; }, plaintext:prop("plain " + id)};
     }
     folder.notes = {push: function(n) { if (n.id() !== "new") throw new Error("existing note mutation"); }};
     return {
-        notes: collection([note("one", "<div>body one</div>"), note("two", "<div>body two</div>"), note("locked", "secret", true)]),
+        notes: collection([note("one", "<div>body one</div>"), note("deleted", "deleted content"), note("two", "<div>body two</div>"), note("locked", "secret", true)]),
         accounts: collection([account, other]), folders: collection([folder]), defaultAccount:prop(account),
         Note:function(properties) { return note("new", properties.body); }
     };
