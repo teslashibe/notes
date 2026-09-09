@@ -369,7 +369,8 @@ func sharing(_ request: Request, _ root: AXUIElement, _ app: NSRunningApplicatio
               let url = URL(string: link), url.scheme == "https", url.host == "www.icloud.com", url.path.hasPrefix("/notes/") else { try fail("fresh iCloud Notes link not available") }
         result["link"] = link
     }
-    try click(unique(panel) { label($0) == "Done" }, named: "Done")
+    let done = try waitFor(panel) { label($0) == "Done" && (attr($0, kAXEnabledAttribute) as? NSNumber)?.boolValue == true }
+    try click(done, named: "Done")
     return result
 }
 func run(_ request: Request) throws -> [String: Any] {
