@@ -105,6 +105,9 @@ state or an operational guarantee.
 ## API constraints
 
 - `List` returns metadata without fetching bodies, including for locked notes.
+- `List` excludes Recently Deleted, and `Get` returns `ErrNotFound` for notes in
+  that folder without reading their content. Like the native deletion verifier,
+  this currently identifies the folder by its English name, `Recently Deleted`.
 - `Get` rejects password-protected content without attempting to unlock it.
 - `Create` creates a new note from a single-line title and escaped plain text;
   it never replaces an existing note body.

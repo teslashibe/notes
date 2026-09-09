@@ -89,7 +89,8 @@ func (c Client) Capabilities() Capabilities {
 	return Capabilities{Read: true, Create: true, NativeChecklist: c.NativeExecutable != "", Sharing: c.NativeExecutable != "", EditText: c.NativeExecutable != ""}
 }
 
-// List returns metadata for all accessible notes, without fetching their bodies.
+// List returns metadata for accessible notes outside Recently Deleted, without
+// fetching their bodies.
 func (c Client) List(ctx context.Context) ([]Note, error) {
 	r, err := c.call(ctx, request{Operation: "list"})
 	return r.Notes, err
@@ -97,6 +98,7 @@ func (c Client) List(ctx context.Context) ([]Note, error) {
 
 // Get reads one exact, opaque native note ID. Titles are never lookup keys.
 // Password-protected notes are rejected without attempting to unlock them.
+// Notes in Recently Deleted return ErrNotFound without reading their content.
 func (c Client) Get(ctx context.Context, id string) (Note, error) {
 	if !validID(id) {
 		return Note{}, ErrInvalidInput
@@ -287,16 +289,23 @@ const script = `function run(argv) {
             }
             return value;
         }
+        function active(note) {
+            // Notes includes recoverably deleted notes in app.notes(). Use the
+            // same folder contract as the native deletion verifier.
+            return note.container().name() !== "Recently Deleted";
+        }
         function html(text) {
             return text.replace(/&/g, "&amp;").replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
                 .replace(/'/g, "&#39;").replace(/\r\n|\r|\n|\u2028|\u2029/g, "<br>");
         }
         if (input.operation === "list") {
-            return JSON.stringify({notes: app.notes().map(function (n) { return metadata(n, false); })});
+            return JSON.stringify({notes: app.notes().filter(active).map(function (n) { return metadata(n, false); })});
         }
         if (input.operation === "get") {
-            return JSON.stringify({note: metadata(exact(app.notes, input.id), true)});
+            var found = exact(app.notes, input.id);
+            if (!active(found)) fail("not_found", "Note is in Recently Deleted");
+            return JSON.stringify({note: metadata(found, true)});
         }
         if (input.operation !== "create") fail("invalid_input", "Unknown operation");
         var account = input.account_id ? exact(app.accounts, input.account_id) : null;
