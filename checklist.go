@@ -186,7 +186,7 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 		return fail(err, false)
 	}
 	err = cmd.Wait()
-	uncertain := req.Operation != "checklist" && req.Operation != "participants"
+	uncertain := req.Operation != "checklist" && req.Operation != "participants" && req.Operation != "shared_link"
 	if stdout.exceeded || stderr.exceeded {
 		return fail(ErrOutputLimit, uncertain)
 	}
