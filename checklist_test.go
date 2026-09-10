@@ -260,3 +260,13 @@ func TestNativeParticipants(t *testing.T) {
 		t.Fatal("accepted mismatched participants")
 	}
 }
+
+func TestSharedLinkReadTimeoutCannotImplyUncertainSharing(t *testing.T) {
+	c := nativeHelper(t, "timeout")
+	c.Timeout = 50 * time.Millisecond
+	_, err := c.SharedLink(context.Background(), "exact-note", []string{"+15555501001", "+15555501002"})
+	var op *OperationError
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &op) || op.Uncertain {
+		t.Fatalf("read failure misclassified as a sharing effect: %v", err)
+	}
+}
