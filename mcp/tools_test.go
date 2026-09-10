@@ -28,7 +28,7 @@ func TestPrivateCreationHasNoRecipientAuthority(t *testing.T) {
 
 func TestCatalogIsolationAndDecode(t *testing.T) {
 	tools := Tools()
-	if len(tools) != 13 {
+	if len(tools) != 14 {
 		t.Fatal(len(tools))
 	}
 	tools[0]["inputSchema"].(map[string]any)["properties"].(map[string]any)["operation_id"].(map[string]any)["type"] = "number"

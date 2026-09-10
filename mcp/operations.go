@@ -32,6 +32,7 @@ type Outcome struct {
 	Checked            *bool                 `json:"checked,omitempty"`
 	Creation           string                `json:"creation,omitempty"`
 	Sharing            string                `json:"sharing,omitempty"`
+	Link               string                `json:"link,omitempty"`
 	Items              []Outcome             `json:"items,omitempty"`
 	ExpiresAt          *time.Time            `json:"expires_at,omitempty"`
 }

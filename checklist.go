@@ -88,11 +88,26 @@ func (c Client) native(ctx context.Context, req nativeRequest) ([]ChecklistItem,
 	return result.Items, err
 }
 
-// Share invites exactly the application-authorized participants and verifies the
-// persisted collaboration. A failure may leave a shared note; never blindly retry.
+// Share prepares access for exactly the application-authorized participants.
+// It does not deliver an invitation. New callers should use ShareWithLink and
+// send the returned link to the participants. Never blindly retry a failed share.
 func (c Client) Share(ctx context.Context, id string, participants []string) error {
 	_, err := c.nativeCall(ctx, nativeRequest{Operation: "share", ID: id, Participants: participants})
 	return err
+}
+
+// ShareWithLink prepares and verifies participant access with one native share
+// operation, returning the invitation link the caller must deliver. Neither
+// prepared access nor a copied link proves a recipient received or opened it.
+func (c Client) ShareWithLink(ctx context.Context, id string, participants []string) (string, error) {
+	result, err := c.nativeCall(ctx, nativeRequest{Operation: "share", ID: id, Participants: participants})
+	if err != nil {
+		return "", err
+	}
+	if !validSharedLink(result.Link) {
+		return "", &OperationError{Operation: "share", Uncertain: true, Err: errors.New("verified iCloud Notes link missing after sharing")}
+	}
+	return result.Link, nil
 }
 
 // VerifyParticipants verifies persisted members without adding invitations.
@@ -204,10 +219,16 @@ func (c Client) nativeCall(ctx context.Context, req nativeRequest) (nativeRespon
 		}
 	}
 	if req.Operation == "shared_link" {
-		u, err := url.Parse(result.Link)
-		if err != nil || u.Scheme != "https" || u.Host != "www.icloud.com" || u.User != nil || !strings.HasPrefix(u.Path, "/notes/") || len(strings.TrimPrefix(u.Path, "/notes/")) == 0 {
+		if !validSharedLink(result.Link) {
 			return fail(errors.New("verified iCloud Notes link missing"), false)
 		}
 	}
 	return result, nil
+}
+
+func validSharedLink(link string) bool {
+	u, err := url.Parse(link)
+	return err == nil && u.Scheme == "https" && u.Host == "www.icloud.com" && u.User == nil &&
+		strings.HasPrefix(u.Path, "/notes/") && len(strings.TrimPrefix(u.Path, "/notes/")) > 0 &&
+		!strings.ContainsAny(link, "\r\n\t ")
 }
