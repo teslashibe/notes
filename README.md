@@ -160,3 +160,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [SUPPORT.md](SUPPORT.md), and
 ## License
 
 [MIT](LICENSE).
+
+### Delivering shared-note invitations
+
+Use `Client.ShareWithLink` to prepare access for the application's exact participants
+and obtain the invitation URL from that same native operation. The application must
+send that URL to its participants; a copied link or saved participant list does not
+prove anyone received or opened the note. `Share` remains available for compatibility
+but discards the link. Never retry an uncertain creation/share automatically.
+
+`Client.SharedLink` retrieves an existing link after verifying participants, without
+adding invitations. The `get_note_link` MCP contract accepts an exact note ID; the
+host supplies participant authority. `Outcome.Link` carries the validated URL.
+Private/unshared notes must not gain new sharing permissions through retrieval.
